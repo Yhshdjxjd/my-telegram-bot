@@ -1,10 +1,18 @@
 import telebot
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 import random
+from keep_alive import keep_alive
 
 # এখানে আপনার টেলিগ্রাম বটের টোকেন দিন
 TOKEN = '8696557986:AAHCDyZ4fr3CqHV2LtJPXbWpgbXg6pF81is'
 bot = telebot.TeleBot(TOKEN)
+
+# আপনার টেলিগ্রাম UID
+ADMIN_ID = 8268425884
+
+# আপনার Render এর ওয়েব এড্রেস এখানে দিবেন। 
+# যেমন: https://your-app-name.onrender.com/admin
+WEB_APP_URL = "https://my-telegram-bot-0ubr.onrender.com" 
 
 # ডেমো ইউজারনেম ও পাসওয়ার্ড (যেগুলো ইউজারদের দেওয়া হবে)
 credentials = [
@@ -17,12 +25,18 @@ credentials = [
 # ইউজারের কাজের ধাপ মনে রাখার জন্য
 user_states = {}
 
-def get_main_menu_keyboard():
+def get_main_menu_keyboard(user_id=None):
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row(KeyboardButton("💳 ব্যালেন্স"), KeyboardButton("🛠️ কাজ"))
+    markup.row(KeyboardButton("💰 ব্যালেন্স"), KeyboardButton("🛠 কাজ"))
     markup.row(KeyboardButton("💸 উত্তোলনের অনুরোধ"), KeyboardButton("🎧 সাপোর্ট"))
     markup.row(KeyboardButton("🎁 আমার রেফারেল"), KeyboardButton("🔰 আমি নতুন"))
     markup.row(KeyboardButton("🌐 ভাষা পরিবর্তন"))
+    
+    # যদি ইউজার এডমিন হয়, তাহলে এডমিন প্যানেল বাটন দেখাবে
+    if user_id and user_id == ADMIN_ID:
+        web_app_info = WebAppInfo(url=WEB_APP_URL)
+        markup.row(KeyboardButton("👨‍💻 এডমিন প্যানেল", web_app=web_app_info))
+        
     return markup
 
 def get_task_menu_keyboard():
@@ -44,25 +58,23 @@ def check_membership(user_id):
         return main_member.status in valid_statuses and support_member.status in valid_statuses
     except Exception as e:
         print(f"Membership check error: {e}")
-        # Testing এর সুবিধার জন্য True দেওয়া, প্রোডাকশনে False করবেন যদি চ্যানেল না থাকে
         return False
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     user_id = message.from_user.id
     
-    # চ্যানেল চেক (আপাতত বাইপাস করা চাইলে নিচের if অংশটি মডিফাই করতে পারেন)
     if check_membership(user_id):
-        welcome_text = f"👑 <b>স্বাগতম, {message.from_user.first_name}!</b>\n\n<tg-emoji emoji-id='6312260233171312151'>💎</tg-emoji> <b>কাজ শুরু করতে নিচের অপশনগুলো ব্যবহার করুন</b> 🔽"
-        bot.send_message(message.chat.id, welcome_text, reply_markup=get_main_menu_keyboard(), parse_mode='HTML')
+        welcome_text = f"👑 <b>স্বাগতম, {message.from_user.first_name}!</b>\n\n💎 <b>কাজ শুরু করতে নিচের অপশনগুলো ব্যবহার করুন</b> 🔽"
+        bot.send_message(message.chat.id, welcome_text, reply_markup=get_main_menu_keyboard(user_id), parse_mode='HTML')
         return
 
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("📢 জয়েন করুন: মেইন চ্যানেল", url="https://t.me/income_box1"))
-    markup.add(InlineKeyboardButton("📢 জয়েন করুন: 𝗦𝘂𝗽𝗽𝗼𝗿𝘁", url="https://t.me/+MDnz3-C-7FkzZDY1"))
+    markup.add(InlineKeyboardButton("📢 জয়েন করুন: Support", url="https://t.me/+MDnz3-C-7FkzZDY1"))
     markup.add(InlineKeyboardButton("✅ Verify (ভেরিফাই)", callback_data="verify_join"))
 
-    text = ("<tg-emoji emoji-id='6311983130471308119'>✅</tg-emoji> <b>বটটি ব্যবহার করতে হলে আপনাকে আমাদের অফিশিয়াল চ্যানেলগুলোতে জয়েন করতে হবে!</b>\n\n"
+    text = ("✅ <b>বটটি ব্যবহার করতে হলে আপনাকে আমাদের অফিশিয়াল চ্যানেলগুলোতে জয়েন করতে হবে!</b>\n\n"
             "নিচের চ্যানেলগুলোতে জয়েন করে 'Verify' বাটনে ক্লিক করুন।")
     bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode='HTML')
 
@@ -74,22 +86,21 @@ def handle_query(call):
             bot.answer_callback_query(call.id, "✅ ভেরিফিকেশন সফল হয়েছে!", show_alert=True)
             bot.delete_message(call.message.chat.id, call.message.message_id)
             
-            welcome_text = f"👑 <b>স্বাগতম, {call.from_user.first_name}!</b>\n\n<tg-emoji emoji-id='6312260233171312151'>💎</tg-emoji> <b>কাজ শুরু করতে নিচের অপশনগুলো ব্যবহার করুন</b> 🔽"
-            bot.send_message(call.message.chat.id, welcome_text, reply_markup=get_main_menu_keyboard(), parse_mode='HTML')
+            welcome_text = f"👑 <b>স্বাগতম, {call.from_user.first_name}!</b>\n\n💎 <b>কাজ শুরু করতে নিচের অপশনগুলো ব্যবহার করুন</b> 🔽"
+            bot.send_message(call.message.chat.id, welcome_text, reply_markup=get_main_menu_keyboard(user_id), parse_mode='HTML')
         else:
             bot.answer_callback_query(call.id, "ভেরিফিকেশন ব্যর্থ হয়েছে!", show_alert=True)
-            bot.send_message(call.message.chat.id, "<tg-emoji emoji-id='6312235051778056164'>🚫</tg-emoji> <b>আপনি এখনো চ্যানেলগুলোতে জয়েন করেননি! দয়া করে জয়েন করুন।</b>", parse_mode='HTML')
+            bot.send_message(call.message.chat.id, "🚫 <b>আপনি এখনো চ্যানেলগুলোতে জয়েন করেননি! দয়া করে জয়েন করুন।</b>", parse_mode='HTML')
 
 @bot.message_handler(func=lambda message: True)
 def handle_messages(message):
     text = message.text
     user_id = message.from_user.id
     
-    # বাতিল বাটন চাপলে সবকিছু রিসেট করে মেইন মেনুতে নিয়ে যাবে
     if text == "❌ বাতিল":
         if user_id in user_states:
             del user_states[user_id]
-        bot.send_message(message.chat.id, "<tg-emoji emoji-id='6311965254817423602'>❌</tg-emoji> <b>কাজ বাতিল করা হয়েছে।</b>", reply_markup=get_main_menu_keyboard(), parse_mode='HTML')
+        bot.send_message(message.chat.id, "❌ <b>কাজ বাতিল করা হয়েছে।</b>", reply_markup=get_main_menu_keyboard(user_id), parse_mode='HTML')
         return
 
     state = user_states.get(user_id)
@@ -118,46 +129,46 @@ def handle_messages(message):
         if state['step'] == 'AWAITING_ACCOUNT_FINISH':
             if text == '✅ অ্যাকাউন্ট খোলা শেষ':
                 del user_states[user_id]
-                bot.send_message(message.chat.id, "এইটার পেমেন্ট ২ ঘন্টা থেকে ৭২ ঘন্টার ভিতর দেওয়া হবে। আরো কাজ করতে চাইলে মেনু থেকে কাজ নির্বাচন করুন।", reply_markup=get_main_menu_keyboard(), parse_mode='HTML')
+                bot.send_message(message.chat.id, "✅ এইটার পেমেন্ট ২ ঘন্টা থেকে ৭২ ঘন্টার ভিতর দেওয়া হবে। আরো কাজ করতে চাইলে মেনু থেকে কাজ নির্বাচন করুন।", reply_markup=get_main_menu_keyboard(user_id), parse_mode='HTML')
             return
 
-    # 💳 ব্যালেন্স মেনু
-    if text == "💳 ব্যালেন্স":
+    # 💰 ব্যালেন্স মেনু
+    if text == "💰 ব্যালেন্স":
         balance_text = (
             "💠 <b>আপনার ব্যালেন্স ড্যাশবোর্ড</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            "<tg-emoji emoji-id='6312344027983257537'>💰</tg-emoji> <b>মূল ব্যালেন্স:</b> 0.00 BDT\n"
+            "💰 <b>মূল ব্যালেন্স:</b> 0.00 BDT\n"
             "⏳ <b>উত্তোলন (পেন্ডিং):</b> 0.00 BDT\n"
-            "<tg-emoji emoji-id='6312344027983257537'>📈</tg-emoji> <b>সর্বমোট আয়:</b> 0.00 BDT\n"
+            "📈 <b>সর্বমোট আয়:</b> 0.00 BDT\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            "<tg-emoji emoji-id='6311983130471308119'>✅</tg-emoji> <b>সফল কাজ:</b> 0 টি\n"
+            "✅ <b>সফল কাজ:</b> 0 টি\n"
             "🔄 <b>পেন্ডিং কাজ:</b> 0 টি"
         )
         bot.send_message(message.chat.id, balance_text, parse_mode='HTML')
         
-    elif text == "🛠️ কাজ":
-        bot.send_message(message.chat.id, "<tg-emoji emoji-id='6312260233171312151'>👨‍💻</tg-emoji> <b>যেকোনো একটি কাজ সিলেক্ট করুন</b> ⬇️", reply_markup=get_task_menu_keyboard(), parse_mode='HTML')
+    elif text == "🛠 কাজ":
+        bot.send_message(message.chat.id, "👨‍💻 <b>যেকোনো একটি কাজ সিলেক্ট করুন</b> ⬇️", reply_markup=get_task_menu_keyboard(), parse_mode='HTML')
         
     elif text == "💸 উত্তোলনের অনুরোধ":
-        bot.send_message(message.chat.id, "🏧 *আপনার উত্তোলনের মাধ্যম নির্বাচন করুন:* (শীঘ্রই আসছে...)", parse_mode='Markdown')
+        bot.send_message(message.chat.id, "🏧 <b>আপনার উত্তোলনের মাধ্যম নির্বাচন করুন:</b> (শীঘ্রই আসছে...)", parse_mode='HTML')
         
     elif text == "🎧 সাপোর্ট":
-        bot.send_message(message.chat.id, "👨‍💼 *অ্যাডমিনের সাথে যোগাযোগ করুন:* @AdminUser", parse_mode='Markdown')
+        bot.send_message(message.chat.id, "👨‍💼 <b>অ্যাডমিনের সাথে যোগাযোগ করুন:</b> @AdminUser", parse_mode='HTML')
         
     elif text == "🎁 আমার রেফারেল":
-        bot.send_message(message.chat.id, "🔗 *আপনার রেফারেল লিংক:*\\n\u0060https://t.me/YourBot?start=" + str(message.from_user.id) + "\u0060", parse_mode='Markdown')
+        bot.send_message(message.chat.id, "🔗 <b>আপনার রেফারেল লিংক:</b>\n<code>https://t.me/YourBot?start=" + str(message.from_user.id) + "</code>", parse_mode='HTML')
         
     elif text == "🔰 আমি নতুন":
-        bot.send_message(message.chat.id, "📖 *কাজের নিয়মাবলী:* \n১. প্রথমে কাজ অপশনে যান।\n২. সোশ্যাল মিডিয়া টাস্ক কমপ্লিট করুন।\n৩. স্ক্রিনশট জমা দিন।", parse_mode='Markdown')
+        bot.send_message(message.chat.id, "📖 <b>কাজের নিয়মাবলী:</b> \n১. প্রথমে কাজ অপশনে যান।\n২. সোশ্যাল মিডিয়া টাস্ক কমপ্লিট করুন।\n৩. স্ক্রিনশট জমা দিন।", parse_mode='HTML')
         
     elif text == "🌐 ভাষা পরিবর্তন":
-        bot.send_message(message.chat.id, "🌍 *ভাষা নির্বাচন করুন:* \nবর্তমানে শুধু বাংলা উপলব্ধ।", parse_mode='Markdown')
+        bot.send_message(message.chat.id, "🌍 <b>ভাষা নির্বাচন করুন:</b> \nবর্তমানে শুধু বাংলা উপলব্ধ।", parse_mode='HTML')
         
     elif text == "📸 ইন্সটাগ্রাম কাজ":
         markup = ReplyKeyboardMarkup(resize_keyboard=True)
         markup.add(KeyboardButton("ইন্সটাগ্রাম 2fa (৳4.30)"))
         markup.add(KeyboardButton("❌ বাতিল"))
-        bot.send_message(message.chat.id, "<tg-emoji emoji-id='6312260233171312151'>🟣</tg-emoji> <b>সিলেক্ট করুন:</b>", reply_markup=markup, parse_mode='HTML')
+        bot.send_message(message.chat.id, "🟣 <b>সিলেক্ট করুন:</b>", reply_markup=markup, parse_mode='HTML')
         
     elif text == "ইন্সটাগ্রাম 2fa (৳4.30)":
         user_states[user_id] = {'step': 'AWAITING_ACCOUNT_CREATION'}
@@ -178,9 +189,10 @@ def handle_messages(message):
         bot.send_message(message.chat.id, bot_text, reply_markup=markup, parse_mode='HTML')
         
     elif text == "📘 ফেসবুক কাজ":
-        bot.send_message(message.chat.id, "⏳ *কাজ খোঁজা হচ্ছে... দয়া করে অপেক্ষা করুন...*", parse_mode='Markdown')
+        bot.send_message(message.chat.id, "⏳ <b>কাজ খোঁজা হচ্ছে... দয়া করে অপেক্ষা করুন...</b>", parse_mode='HTML')
 
 if __name__ == '__main__':
+    keep_alive()
     print("🚀 Bot is running... Waiting for users!")
-    # none_stop=True রাখলে বট ক্র্যাশ করলেও আবার রিস্টার্ট নিবে
+    bot.remove_webhook()
     bot.polling(none_stop=True)
