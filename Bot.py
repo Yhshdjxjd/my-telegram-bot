@@ -16,7 +16,7 @@ db = firestore.client()
 # ==========================================
 # Telegram Bot Token & Webhook URL
 # ==========================================
-TOKEN = '8696557986:AAHCDyZ4fr3CqHV2LtJPXbWpgbXg6pF81is'
+TOKEN = '8696557986:AAHxuHc-Nl8vj290KyRepuBCF4iBs_sqjvk'
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
