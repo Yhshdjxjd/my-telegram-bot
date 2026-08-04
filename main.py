@@ -15,7 +15,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from telegram.error import TelegramError
 import firebase_admin
 from firebase_admin import credentials, firestore, initialize_app
-from firebase_admin.firestore import FieldValue
+from google.cloud import firestore as google_firestore
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -156,7 +156,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'referral_bonus_paid': False,
                 'total_earned': 0,
                 'successful_tasks': 0,
-                'joined_at': FieldValue.server_timestamp()
+                'joined_at': google_firestore.SERVER_TIMESTAMP
             })
     
     is_member = await check_membership(context.bot, user_id)
@@ -577,14 +577,14 @@ async def handle_instagram_finish(update: Update, context: ContextTypes.DEFAULT_
             'price': 4.30,
             'review_status': 'pending',
             'notified': False,
-            'timestamp': FieldValue.server_timestamp()
+            'timestamp': google_firestore.SERVER_TIMESTAMP
         }
         
         try:
             db.collection('completed_tasks').add(completed_task)
             db.collection('tasks').document(user_states[user_id]['task_doc_id']).update({
                 'status': 'completed',
-                'attempted_by': FieldValue.array_union([user_id])
+                'attempted_by': google_firestore.ArrayUnion([user_id])
             })
         except Exception as e:
             logger.error(e)
@@ -833,14 +833,14 @@ async def handle_facebook_finish(update: Update, context: ContextTypes.DEFAULT_T
             'price': 6.55,
             'review_status': 'pending',
             'notified': False,
-            'timestamp': FieldValue.server_timestamp()
+            'timestamp': google_firestore.SERVER_TIMESTAMP
         }
         
         try:
             db.collection('completed_tasks').add(completed_task)
             db.collection('tasks').document(user_states[user_id]['task_doc_id']).update({
                 'status': 'completed',
-                'attempted_by': FieldValue.array_union([user_id])
+                'attempted_by': google_firestore.ArrayUnion([user_id])
             })
         except Exception as e:
             logger.error(e)
@@ -991,7 +991,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     'number': number,
                     'status': 'pending',
                     'notified': False,
-                    'timestamp': FieldValue.server_timestamp()
+                    'timestamp': google_firestore.SERVER_TIMESTAMP
                 })
                 
                 del user_states[user_id]
