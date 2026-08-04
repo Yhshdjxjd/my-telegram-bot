@@ -35,7 +35,6 @@ logger = logging.getLogger(__name__)
 # ==========================================
 app = Flask(__name__)
 CORS(app)
-# Render assigns a dynamic PORT via environment variable
 PORT = int(os.environ.get('PORT', 3000))
 
 # ==========================================
@@ -48,11 +47,11 @@ try:
         cred = credentials.Certificate(service_account)
         initialize_app(cred)
         db = firestore.client()
-        logger.info('✅ Firebase initialized successfully.')
+        logger.info('Firebase initialized successfully.')
     else:
-        logger.warning('⚠️ FIREBASE_SERVICE_ACCOUNT is not set. Firestore will not be available.')
+        logger.warning('FIREBASE_SERVICE_ACCOUNT is not set.')
 except Exception as e:
-    logger.error(f'❌ Failed to initialize Firebase: {e}')
+    logger.error(f'Failed to initialize Firebase: {e}')
 
 # ==========================================
 # Constants
@@ -65,10 +64,20 @@ BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 user_states: Dict[int, Dict[str, Any]] = {}
 
 # ==========================================
+# Helper: resolve a field from multiple possible keys
+# ==========================================
+def get_field(data: dict, *keys: str) -> str:
+    """Try each key in order and return the first non-empty value."""
+    for key in keys:
+        val = data.get(key, '')
+        if val:
+            return str(val)
+    return ''
+
+# ==========================================
 # Keyboard Functions
 # ==========================================
 def get_main_keyboard():
-    """Get main menu keyboard"""
     keyboard = [
         [KeyboardButton("💰 ব্যালেন্স"), KeyboardButton("💼 কাজ")],
         [KeyboardButton("💸 উত্তোলনের অনুরোধ"), KeyboardButton("🎧 সাপোর্ট")],
@@ -78,7 +87,6 @@ def get_main_keyboard():
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def get_task_menu_keyboard():
-    """Get task menu keyboard"""
     keyboard = [
         [KeyboardButton("📸 ইনস্টাগ্রাম কাজ")],
         [KeyboardButton("📘 ফেসবুক কাজ")],
@@ -90,20 +98,16 @@ def get_task_menu_keyboard():
 # Helper Functions
 # ==========================================
 async def check_membership(bot, user_id: int) -> bool:
-    """Check if user is member of both channels"""
     try:
         main_member = await bot.get_chat_member(MAIN_CHANNEL, user_id)
-        main_status = main_member.status
-        main_valid = main_status in ['member', 'administrator', 'creator', 'restricted']
+        main_valid = main_member.status in ['member', 'administrator', 'creator', 'restricted']
 
         support_valid = False
         try:
             support_member = await bot.get_chat_member(SUPPORT_CHANNEL, user_id)
-            support_status = support_member.status
-            support_valid = support_status in ['member', 'administrator', 'creator', 'restricted']
+            support_valid = support_member.status in ['member', 'administrator', 'creator', 'restricted']
         except Exception as e:
             logger.error(f"Support channel check error: {e}")
-            support_valid = False
 
         return main_valid and support_valid
     except Exception as e:
@@ -143,7 +147,6 @@ async def clear_user_state(user_id: int, bot, chat_id: int = None):
 # Telegram Bot Handlers
 # ==========================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /start command"""
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     user = update.effective_user
@@ -158,9 +161,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
         if state.get('task_doc_id') and db:
             try:
-                db.collection('tasks').document(state['task_doc_id']).update({
-                    'status': 'pending'
-                })
+                db.collection('tasks').document(state['task_doc_id']).update({'status': 'pending'})
             except Exception as e:
                 logger.error(e)
         del user_states[user_id]
@@ -168,12 +169,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if db:
         user_ref = db.collection('users').document(str(user_id))
         user_doc = user_ref.get()
-
         if not user_doc.exists:
             referred_by = None
             if context.args and context.args[0] != str(user_id):
                 referred_by = context.args[0]
-
             user_ref.set({
                 'first_name': user.first_name or '',
                 'last_name': user.last_name or '',
@@ -189,10 +188,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_member:
         first_name = user.first_name or 'ইউজার'
-        welcome_text = f"📌 <b>স্বাগতম, {first_name}!</b>\n\n💎 <b>কাজ শুরু করতে নিচের অপশনগুলো ব্যবহার করুন</b> 🔽"
         await context.bot.send_message(
             chat_id,
-            welcome_text,
+            f"📌 <b>স্বাগতম, {first_name}!</b>\n\n💎 <b>কাজ শুরু করতে নিচের অপশনগুলো ব্যবহার করুন</b> 🔽",
             parse_mode='HTML',
             reply_markup=get_main_keyboard()
         )
@@ -203,17 +201,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📢 জয়েন করুন: Support", url="https://t.me/+MDnz3-C-7FkzZDY1")],
         [InlineKeyboardButton("✅ Verify (ভেরিফাই)", callback_data="verify_join")]
     ])
-
-    text = "✅ <b>বটটি ব্যবহার করতে হলে আপনাকে আমাদের অফিশিয়াল চ্যানেলগুলোতে জয়েন করতে হবে!</b>\n\nনিচের চ্যানেলগুলোতে জয়েন করে 'Verify' বাটনে ক্লিক করুন।"
     await context.bot.send_message(
         chat_id,
-        text,
+        "✅ <b>বটটি ব্যবহার করতে হলে আপনাকে আমাদের অফিশিয়াল চ্যানেলগুলোতে জয়েন করতে হবে!</b>\n\nনিচের চ্যানেলগুলোতে জয়েন করে 'Verify' বাটনে ক্লিক করুন।",
         parse_mode='HTML',
         reply_markup=inline_keyboard
     )
 
 async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle verify join callback"""
     query = update.callback_query
     await query.answer()
 
@@ -226,12 +221,10 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     if is_member:
         await query.answer("✅ ভেরিফিকেশন সফল হয়েছে!", show_alert=True)
         await context.bot.delete_message(chat_id, query.message.message_id)
-
         first_name = user.first_name or 'ইউজার'
-        welcome_text = f"📌 <b>স্বাগতম, {first_name}!</b>\n\n💎 <b>কাজ শুরু করতে নিচের অপশনগুলো ব্যবহার করুন</b> 🔽"
         await context.bot.send_message(
             chat_id,
-            welcome_text,
+            f"📌 <b>স্বাগতম, {first_name}!</b>\n\n💎 <b>কাজ শুরু করতে নিচের অপশনগুলো ব্যবহার করুন</b> 🔽",
             parse_mode='HTML',
             reply_markup=get_main_keyboard()
         )
@@ -244,7 +237,6 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         )
 
 async def handle_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle balance command"""
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
 
@@ -255,23 +247,16 @@ async def handle_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_doc = db.collection('users').document(str(user_id)).get()
         user_data = user_doc.to_dict() or {}
-
         total_earned = user_data.get('total_earned', 0)
         successful_tasks = user_data.get('successful_tasks', 0)
 
         pending_tasks_snapshot = db.collection('completed_tasks')\
-            .where('user_id', '==', user_id)\
-            .where('review_status', '==', 'pending')\
-            .get()
+            .where('user_id', '==', user_id).where('review_status', '==', 'pending').get()
         pending_tasks = len(pending_tasks_snapshot)
 
-        withdrawals_snapshot = db.collection('withdrawals')\
-            .where('user_id', '==', user_id)\
-            .get()
-
+        withdrawals_snapshot = db.collection('withdrawals').where('user_id', '==', user_id).get()
         total_withdrawn = 0
         pending_withdrawal = 0
-
         for doc in withdrawals_snapshot:
             data = doc.to_dict()
             if data.get('status') == 'approved':
@@ -291,13 +276,11 @@ async def handle_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🔄 <b>পেন্ডিং কাজ:</b> {pending_tasks} টি"""
 
         await context.bot.send_message(chat_id, balance_text, parse_mode='HTML')
-
     except Exception as e:
         logger.error(f"Error fetching balance: {e}")
         await context.bot.send_message(chat_id, "⚠️ ব্যালেন্স লোড করতে সমস্যা হয়েছে।")
 
 async def handle_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle tasks command"""
     chat_id = update.effective_chat.id
     await context.bot.send_message(
         chat_id,
@@ -307,7 +290,6 @@ async def handle_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_withdrawal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle withdrawal request"""
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
 
@@ -318,13 +300,9 @@ async def handle_withdrawal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_doc = db.collection('users').document(str(user_id)).get()
         user_data = user_doc.to_dict() or {}
-
         total_earned = user_data.get('total_earned', 0)
 
-        withdrawals_snapshot = db.collection('withdrawals')\
-            .where('user_id', '==', user_id)\
-            .get()
-
+        withdrawals_snapshot = db.collection('withdrawals').where('user_id', '==', user_id).get()
         total_withdrawn = 0
         pending_withdrawal = 0
         for doc in withdrawals_snapshot:
@@ -347,19 +325,14 @@ async def handle_withdrawal(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id,
                 f"আপনার বর্তমান ব্যালেন্স <b>{current_balance:.2f} টাকা</b>\n\nআপনি কত টাকা উত্তোলন করতে চান তা নিচে টাইপ করুন:",
                 parse_mode='HTML',
-                reply_markup=ReplyKeyboardMarkup(
-                    [[KeyboardButton("❌ বাতিল")]],
-                    resize_keyboard=True
-                )
+                reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ বাতিল")]], resize_keyboard=True)
             )
             user_states[user_id] = {'step': 'AWAITING_WITHDRAWAL_AMOUNT'}
-
     except Exception as e:
         logger.error(f"Error initiating withdrawal: {e}")
         await context.bot.send_message(chat_id, "⚠️ এরর হয়েছে, আবার চেষ্টা করুন।")
 
 async def handle_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle support command"""
     chat_id = update.effective_chat.id
     await context.bot.send_message(
         chat_id,
@@ -368,10 +341,8 @@ async def handle_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle referral command"""
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
-
     referral_link = f"https://t.me/IncomeBoxXBot?start={user_id}"
     await context.bot.send_message(
         chat_id,
@@ -380,7 +351,6 @@ async def handle_referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_new_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle new user command"""
     chat_id = update.effective_chat.id
     await context.bot.send_message(
         chat_id,
@@ -389,7 +359,6 @@ async def handle_new_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle language change"""
     chat_id = update.effective_chat.id
     await context.bot.send_message(
         chat_id,
@@ -398,7 +367,7 @@ async def handle_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle cancel command — always works regardless of user state"""
+    """Handle cancel — always works from any state."""
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     await clear_user_state(user_id, context.bot, chat_id)
@@ -412,11 +381,7 @@ async def handle_instagram_tasks(update: Update, context: ContextTypes.DEFAULT_T
 
     is_member = await check_membership(context.bot, user_id)
     if not is_member:
-        await context.bot.send_message(
-            chat_id,
-            "⚠️ <b>দয়া করে প্রথমে চ্যানেলে জয়েন করুন!</b>",
-            parse_mode='HTML'
-        )
+        await context.bot.send_message(chat_id, "⚠️ <b>দয়া করে প্রথমে চ্যানেলে জয়েন করুন!</b>", parse_mode='HTML')
         return
 
     await context.bot.send_message(
@@ -439,19 +404,12 @@ async def handle_instagram_2fa_task(update: Update, context: ContextTypes.DEFAUL
 
     is_member = await check_membership(context.bot, user_id)
     if not is_member:
-        await context.bot.send_message(
-            chat_id,
-            "⚠️ <b>দয়া করে প্রথমে চ্যানেলে জয়েন করুন!</b>",
-            parse_mode='HTML'
-        )
+        await context.bot.send_message(chat_id, "⚠️ <b>দয়া করে প্রথমে চ্যানেলে জয়েন করুন!</b>", parse_mode='HTML')
         return
 
     try:
         tasks_snapshot = db.collection('tasks')\
-            .where('platform', '==', 'Instagram')\
-            .where('status', '==', 'pending')\
-            .limit(10)\
-            .get()
+            .where('platform', '==', 'Instagram').where('status', '==', 'pending').limit(10).get()
 
         if len(tasks_snapshot) == 0:
             await context.bot.send_message(
@@ -466,8 +424,7 @@ async def handle_instagram_2fa_task(update: Update, context: ContextTypes.DEFAUL
         task_data = None
         for doc in tasks_snapshot:
             data = doc.to_dict()
-            attempted_by = data.get('attempted_by', [])
-            if user_id not in attempted_by:
+            if user_id not in data.get('attempted_by', []):
                 task_doc = doc
                 task_data = data
                 break
@@ -481,18 +438,14 @@ async def handle_instagram_2fa_task(update: Update, context: ContextTypes.DEFAUL
             )
             return
 
-        db.collection('tasks').document(task_doc.id).update({
-            'status': 'assigned'
-        })
+        db.collection('tasks').document(task_doc.id).update({'status': 'assigned'})
 
         async def task_timeout():
             await asyncio.sleep(30 * 60)
             if user_id in user_states and user_states[user_id].get('task_doc_id') == task_doc.id:
                 try:
                     if db:
-                        db.collection('tasks').document(task_doc.id).update({
-                            'status': 'pending'
-                        })
+                        db.collection('tasks').document(task_doc.id).update({'status': 'pending'})
                 except Exception as e:
                     logger.error(e)
                 del user_states[user_id]
@@ -512,24 +465,20 @@ async def handle_instagram_2fa_task(update: Update, context: ContextTypes.DEFAUL
             'timeout_task': asyncio.create_task(task_timeout())
         }
 
-        bot_text = f"""👤 <b>ইউজারনেম:</b> <code>{task_data.get('username', '')}</code>
-🔐 <b>পাসওয়ার্ড:</b> <code>{task_data.get('password', '')}</code>
-
-📸 উপরের ইউজারনেম এবং পাসওয়ার্ড দিয়ে অ্যাকাউন্টে লগইন করুন। তারপর নিচে <b>🔐 2FA Set</b> বাটনে ক্লিক করুন 👀"""
+        bot_text = (
+            f"👤 <b>ইউজারনেম:</b> <code>{task_data.get('username', '')}</code>\n"
+            f"🔐 <b>পাসওয়ার্ড:</b> <code>{task_data.get('password', '')}</code>\n\n"
+            f"📸 উপরের ইউজারনেম এবং পাসওয়ার্ড দিয়ে অ্যাকাউন্টে লগইন করুন। তারপর নিচে <b>🔐 2FA Set</b> বাটনে ক্লিক করুন 👀"
+        )
 
         await context.bot.send_message(
-            chat_id,
-            bot_text,
-            parse_mode='HTML',
+            chat_id, bot_text, parse_mode='HTML',
             reply_markup=ReplyKeyboardMarkup(
-                [
-                    [KeyboardButton("🔐 2FA Set"), KeyboardButton("⚙️ কিভাবে কাজ করব")],
-                    [KeyboardButton("❌ বাতিল")]
-                ],
+                [[KeyboardButton("🔐 2FA Set"), KeyboardButton("⚙️ কিভাবে কাজ করব")],
+                 [KeyboardButton("❌ বাতিল")]],
                 resize_keyboard=True
             )
         )
-
     except Exception as e:
         logger.error(f"Error fetching tasks: {e}")
         await context.bot.send_message(chat_id, "⚠️ ডাটাবেস এরর। আবার চেষ্টা করুন।")
@@ -543,26 +492,22 @@ async def handle_instagram_2fa_set(update: Update, context: ContextTypes.DEFAULT
 
     user_states[user_id]['step'] = 'AWAITING_2FA_KEY'
     await context.bot.send_message(
-        chat_id,
-        "🔑 <b>2FA Key টি দিন:</b> ❤️",
-        parse_mode='HTML',
-        reply_markup=ReplyKeyboardMarkup(
-            [[KeyboardButton("❌ বাতিল")]],
-            resize_keyboard=True
-        )
+        chat_id, "🔑 <b>2FA Key টি দিন:</b> ❤️", parse_mode='HTML',
+        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ বাতিল")]], resize_keyboard=True)
     )
 
 async def handle_instagram_how_to(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    how_to_text = """📖 <b>কিভাবে Instagram কাজ করবেন:</b>
-
-1️⃣ প্রদত্ত ইউজারনেম ও পাসওয়ার্ড দিয়ে অ্যাকাউন্টে লগইন করুন
-2️⃣ 2FA সেটআপ করুন (যদি প্রয়োজন হয়)
-3️⃣ 2FA Key কপি করে পাঠান
-4️⃣ "অ্যাকাউন্ট খোলা শেষ" বাটনে ক্লিক করুন
-
-💰 পেমেন্ট পাবেন ২-৭২ ঘন্টার মধ্যে"""
-    await context.bot.send_message(chat_id, how_to_text, parse_mode='HTML')
+    await context.bot.send_message(
+        chat_id,
+        "📖 <b>কিভাবে Instagram কাজ করবেন:</b>\n\n"
+        "1️⃣ প্রদত্ত ইউজারনেম ও পাসওয়ার্ড দিয়ে অ্যাকাউন্টে লগইন করুন\n"
+        "2️⃣ 2FA সেটআপ করুন (যদি প্রয়োজন হয়)\n"
+        "3️⃣ 2FA Key কপি করে পাঠান\n"
+        "4️⃣ \"অ্যাকাউন্ট খোলা শেষ\" বাটনে ক্লিক করুন\n\n"
+        "💰 পেমেন্ট পাবেন ২-৭২ ঘন্টার মধ্যে",
+        parse_mode='HTML'
+    )
 
 async def handle_instagram_2fa_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -572,17 +517,15 @@ async def handle_instagram_2fa_key(update: Update, context: ContextTypes.DEFAULT
     user_states[user_id]['two_fa_key'] = update.message.text
 
     code = str(random.randint(100000, 999999))
-
-    msg_text = f"""অ্যাকাউন্ট খোলা শেষ হলে নিচের বাটনে চাপ দিন:
-নিচের কোডটির উপর চাপ দিলে অটোমেটিক কপি হয়ে যাবে ❤️
-
-🔑 <code>{code}</code>"""
-
-    await context.bot.send_message(chat_id, msg_text, parse_mode='HTML')
     await context.bot.send_message(
         chat_id,
-        "<b>কাজ শেষ হলে নিচের বাটনে ক্লিক করুন:</b>",
-        parse_mode='HTML',
+        f"অ্যাকাউন্ট খোলা শেষ হলে নিচের বাটনে চাপ দিন:\n"
+        f"নিচের কোডটির উপর চাপ দিলে অটোমেটিক কপি হয়ে যাবে ❤️\n\n"
+        f"🔑 <code>{code}</code>",
+        parse_mode='HTML'
+    )
+    await context.bot.send_message(
+        chat_id, "<b>কাজ শেষ হলে নিচের বাটনে ক্লিক করুন:</b>", parse_mode='HTML',
         reply_markup=ReplyKeyboardMarkup(
             [[KeyboardButton("✅ অ্যাকাউন্ট খোলা শেষ")], [KeyboardButton("❌ বাতিল")]],
             resize_keyboard=True
@@ -606,7 +549,6 @@ async def handle_instagram_finish(update: Update, context: ContextTypes.DEFAULT_
             'notified': False,
             'timestamp': google_firestore.SERVER_TIMESTAMP
         }
-
         try:
             db.collection('completed_tasks').add(completed_task)
             db.collection('tasks').document(user_states[user_id]['task_doc_id']).update({
@@ -618,12 +560,12 @@ async def handle_instagram_finish(update: Update, context: ContextTypes.DEFAULT_
 
     if user_states[user_id].get('timeout_task'):
         user_states[user_id]['timeout_task'].cancel()
-
     del user_states[user_id]
 
     await context.bot.send_message(
         chat_id,
-        "✅ <b>আপনার Instagram কাজ সফলভাবে জমা হয়েছে!</b>\n⏳ পেমেন্ট ২ ঘন্টা থেকে ৭২ ঘন্টার মধ্যে দেওয়া হবে। আরো কাজ করতে থাকুন। 🎯",
+        "✅ <b>আপনার Instagram কাজ সফলভাবে জমা হয়েছে!</b>\n"
+        "⏳ পেমেন্ট ২ ঘন্টা থেকে ৭২ ঘন্টার মধ্যে দেওয়া হবে। আরো কাজ করতে থাকুন। 🎯",
         parse_mode='HTML',
         reply_markup=get_main_keyboard()
     )
@@ -637,17 +579,11 @@ async def handle_facebook_tasks(update: Update, context: ContextTypes.DEFAULT_TY
 
     is_member = await check_membership(context.bot, user_id)
     if not is_member:
-        await context.bot.send_message(
-            chat_id,
-            "⚠️ <b>দয়া করে প্রথমে চ্যানেলে জয়েন করুন!</b>",
-            parse_mode='HTML'
-        )
+        await context.bot.send_message(chat_id, "⚠️ <b>দয়া করে প্রথমে চ্যানেলে জয়েন করুন!</b>", parse_mode='HTML')
         return
 
     await context.bot.send_message(
-        chat_id,
-        "🟣 <b>সিলেক্ট করুন:</b>",
-        parse_mode='HTML',
+        chat_id, "🟣 <b>সিলেক্ট করুন:</b>", parse_mode='HTML',
         reply_markup=ReplyKeyboardMarkup(
             [[KeyboardButton("0 fnd cookies | 6.55৳")], [KeyboardButton("❌ বাতিল")]],
             resize_keyboard=True
@@ -664,19 +600,12 @@ async def handle_facebook_task(update: Update, context: ContextTypes.DEFAULT_TYP
 
     is_member = await check_membership(context.bot, user_id)
     if not is_member:
-        await context.bot.send_message(
-            chat_id,
-            "⚠️ <b>দয়া করে প্রথমে চ্যানেলে জয়েন করুন!</b>",
-            parse_mode='HTML'
-        )
+        await context.bot.send_message(chat_id, "⚠️ <b>দয়া করে প্রথমে চ্যানেলে জয়েন করুন!</b>", parse_mode='HTML')
         return
 
     try:
         tasks_snapshot = db.collection('tasks')\
-            .where('platform', '==', 'Facebook')\
-            .where('status', '==', 'pending')\
-            .limit(10)\
-            .get()
+            .where('platform', '==', 'Facebook').where('status', '==', 'pending').limit(10).get()
 
         if len(tasks_snapshot) == 0:
             await context.bot.send_message(
@@ -691,8 +620,7 @@ async def handle_facebook_task(update: Update, context: ContextTypes.DEFAULT_TYP
         task_data = None
         for doc in tasks_snapshot:
             data = doc.to_dict()
-            attempted_by = data.get('attempted_by', [])
-            if user_id not in attempted_by:
+            if user_id not in data.get('attempted_by', []):
                 task_doc = doc
                 task_data = data
                 break
@@ -706,18 +634,36 @@ async def handle_facebook_task(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return
 
-        db.collection('tasks').document(task_doc.id).update({
-            'status': 'assigned'
-        })
+        db.collection('tasks').document(task_doc.id).update({'status': 'assigned'})
+
+        # -------------------------------------------------------
+        # Resolve field names flexibly — Firestore field names
+        # may vary (snake_case, camelCase, etc.)
+        # Lo�g actual keys so you can verify in server logs.
+        # -------------------------------------------------------
+        logger.info(f"FB task doc fields: {list(task_data.keys())}")
+
+        fb_first_name = get_field(
+            task_data,
+            'first_name', 'firstName', 'fname',
+            'First_Name', 'First Name', 'first', 'name'
+        )
+        fb_last_name = get_field(
+            task_data,
+            'last_name', 'lastName', 'lname',
+            'Last_Name', 'Last Name', 'last'
+        )
+        fb_password = get_field(
+            task_data,
+            'password', 'Password', 'pass', 'pwd', 'passwd'
+        )
 
         async def task_timeout():
             await asyncio.sleep(30 * 60)
             if user_id in user_states and user_states[user_id].get('task_doc_id') == task_doc.id:
                 try:
                     if db:
-                        db.collection('tasks').document(task_doc.id).update({
-                            'status': 'pending'
-                        })
+                        db.collection('tasks').document(task_doc.id).update({'status': 'pending'})
                 except Exception as e:
                     logger.error(e)
                 del user_states[user_id]
@@ -732,34 +678,30 @@ async def handle_facebook_task(update: Update, context: ContextTypes.DEFAULT_TYP
             'step': 'FB_AWAITING_UID_BTN',
             'task_doc_id': task_doc.id,
             'platform': 'Facebook',
-            'first_name': task_data.get('first_name', ''),
-            'last_name': task_data.get('last_name', ''),
-            'password': task_data.get('password', ''),
+            'first_name': fb_first_name,
+            'last_name': fb_last_name,
+            'password': fb_password,
             'timeout_task': asyncio.create_task(task_timeout())
         }
 
-        bot_text = f"""👤 <b>নামের প্রথমাংশ:</b> <code>{task_data.get('first_name', '')}</code>
-👤 <b>নামের শেষাংশ:</b> <code>{task_data.get('last_name', '')}</code>
-🔐 <b>পাসওয়ার্ড:</b> <code>{task_data.get('password', '')}</code>
-
-🔆 উপরের তথ্য দিয়ে অ্যাকাউন্টে লগইন করুন। তারপর <b>🟢 Send UID</b> বাটনে ক্লিক করুন 😎"""
+        bot_text = (
+            f"👤 <b>নামের প্রথমাংশ:</b> <code>{fb_first_name}</code>\n"
+            f"👤 <b>নামের শেষাংশ:</b> <code>{fb_last_name}</code>\n"
+            f"🔐 <b>পাসওয়ার্ড:</b> <code>{fb_password}</code>\n\n"
+            f"🔆 উপরের তথ্য দিয়ে অ্যাকাউন্টে লগইন করুন। তারপর <b>🟢 Send UID</b> বাটনে ক্লিক করুন 😎"
+        )
 
         await context.bot.send_message(
-            chat_id,
-            bot_text,
-            parse_mode='HTML',
+            chat_id, bot_text, parse_mode='HTML',
             reply_markup=ReplyKeyboardMarkup(
-                [
-                    [KeyboardButton("🟢 Send UID")],
-                    [KeyboardButton("🤫 কিভাবে কাজ করব")],
-                    [KeyboardButton("❌ বাতিল")]
-                ],
+                [[KeyboardButton("🟢 Send UID")],
+                 [KeyboardButton("🤫 কিভাবে কাজ করব")],
+                 [KeyboardButton("❌ বাতিল")]],
                 resize_keyboard=True
             )
         )
-
     except Exception as e:
-        logger.error(f"Error fetching tasks: {e}")
+        logger.error(f"Error fetching FB tasks: {e}")
         await context.bot.send_message(chat_id, "⚠️ ডাটাবেস এরর। আবার চেষ্টা করুন।")
 
 async def handle_facebook_uid_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -771,27 +713,23 @@ async def handle_facebook_uid_btn(update: Update, context: ContextTypes.DEFAULT_
 
     user_states[user_id]['step'] = 'FB_AWAITING_UID'
     await context.bot.send_message(
-        chat_id,
-        "আপনার 📘 <b>Facebook UID দিন:</b>",
-        parse_mode='HTML',
-        reply_markup=ReplyKeyboardMarkup(
-            [[KeyboardButton("❌ বাতিল")]],
-            resize_keyboard=True
-        )
+        chat_id, "আপনার 📘 <b>Facebook UID দিন:</b>", parse_mode='HTML',
+        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ বাতিল")]], resize_keyboard=True)
     )
 
 async def handle_facebook_how_to(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    how_to_text = """📖 <b>কিভাবে Facebook কাজ করবেন:</b>
-
-1️⃣ প্রদত্ত তথ্য দিয়ে অ্যাকাউন্টে লগইন করুন
-2️⃣ আপনার Facebook UID খুঁজে বের করুন
-3️⃣ "Send UID" বাটনে ক্লিক করুন এবং UID দিন
-4️⃣ আপনার Cookies দিন
-5️⃣ "অ্যাকাউন্ট খোলা শেষ" বাটনে ক্লিক করুন
-
-💰 পেমেন্ট পাবেন ২-৭২ ঘন্টার মধ্যে"""
-    await context.bot.send_message(chat_id, how_to_text, parse_mode='HTML')
+    await context.bot.send_message(
+        chat_id,
+        "📖 <b>কিভাবে Facebook কাজ করবেন:</b>\n\n"
+        "1️⃣ প্রদত্ত তথ্য দিয়ে অ্যাকাউন্টে লগইন করুন\n"
+        "2️⃣ আপনার Facebook UID খুঁজে বের করুন\n"
+        "3️⃣ \"Send UID\" বাটনে ক্লিক করুন এবং UID দিন\n"
+        "4️⃣ আপনার Cookies দিন\n"
+        "5️⃣ \"অ্যাকাউন্ট খোলা শেষ\" বাটনে ক্লিক করুন\n\n"
+        "💰 পেমেন্ট পাবেন ২-৭২ ঘন্টার মধ্যে",
+        parse_mode='HTML'
+    )
 
 async def handle_facebook_uid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -810,13 +748,8 @@ async def handle_facebook_uid(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_states[user_id]['uid'] = uid_text
 
     await context.bot.send_message(
-        chat_id,
-        "আপনার <b>Cookie দিন ❤️</b>",
-        parse_mode='HTML',
-        reply_markup=ReplyKeyboardMarkup(
-            [[KeyboardButton("❌ বাতিল")]],
-            resize_keyboard=True
-        )
+        chat_id, "আপনার <b>Cookie দিন ❤️</b>", parse_mode='HTML',
+        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ বাতিল")]], resize_keyboard=True)
     )
 
 async def handle_facebook_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -836,9 +769,7 @@ async def handle_facebook_cookies(update: Update, context: ContextTypes.DEFAULT_
     user_states[user_id]['cookies'] = cookies
 
     await context.bot.send_message(
-        chat_id,
-        "✅ <b>সম্পূর্ণ করতে নিচের বাটনে চাপুন:</b>",
-        parse_mode='HTML',
+        chat_id, "✅ <b>সম্পূর্ণ করতে নিচের বাটনে চাপুন:</b>", parse_mode='HTML',
         reply_markup=ReplyKeyboardMarkup(
             [[KeyboardButton("✅ অ্যাকাউন্ট খোলা শেষ")], [KeyboardButton("❌ বাতিল")]],
             resize_keyboard=True
@@ -864,7 +795,6 @@ async def handle_facebook_finish(update: Update, context: ContextTypes.DEFAULT_T
             'notified': False,
             'timestamp': google_firestore.SERVER_TIMESTAMP
         }
-
         try:
             db.collection('completed_tasks').add(completed_task)
             db.collection('tasks').document(user_states[user_id]['task_doc_id']).update({
@@ -876,12 +806,12 @@ async def handle_facebook_finish(update: Update, context: ContextTypes.DEFAULT_T
 
     if user_states[user_id].get('timeout_task'):
         user_states[user_id]['timeout_task'].cancel()
-
     del user_states[user_id]
 
     await context.bot.send_message(
         chat_id,
-        "🎉 📘 <b>Facebook কাজ সফলভাবে জমা হয়েছে!</b>\n⏳ পেমেন্ট ২ ঘন্টা থেকে ৭২ ঘন্টার মধ্যে দেওয়া হবে।",
+        "🎉 📘 <b>Facebook কাজ সফলভাবে জমা হয়েছে!</b>\n"
+        "⏳ পেমেন্ট ২ ঘন্টা থেকে ৭২ ঘন্টার মধ্যে দেওয়া হবে।",
         parse_mode='HTML',
         reply_markup=get_main_keyboard()
     )
@@ -908,8 +838,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # STATE-BASED FLOW
     # -------------------------------------------------------
     if user_id in user_states:
-        state = user_states[user_id]
-        step = state.get('step')
+        step = user_states[user_id].get('step')
 
         # --- Withdrawal flow ---
         if step == 'AWAITING_WITHDRAWAL_AMOUNT':
@@ -925,13 +854,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 user_doc = db.collection('users').document(str(user_id)).get()
                 user_data = user_doc.to_dict() or {}
+          �      total_earned = user_data.get('total_earned', 0)
 
-                total_earned = user_data.get('total_earned', 0)
-
-                withdrawals_snapshot = db.collection('withdrawals')\
-                    .where('user_id', '==', user_id)\
-                    .get()
-
+                withdrawals_snapshot = db.collection('withdrawals').where('user_id', '==', user_id).get()
                 total_withdrawn = 0
                 pending_withdrawal = 0
                 for doc in withdrawals_snapshot:
@@ -942,18 +867,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         pending_withdrawal += data.get('amount', 0)
 
                 balance = total_earned - total_withdrawn - pending_withdrawal
-
                 if amount > balance:
                     await context.bot.send_message(
-                        chat_id,
-                        "<b>আপনার একাউন্টে পর্যাপ্ত ব্যালেন্স নেই।</b>",
-                        parse_mode='HTML'
+                        chat_id, "<b>আপনার একাউন্টে পর্যাপ্ত ব্যালেন্স নেই।</b>", parse_mode='HTML'
                     )
                     return
 
                 user_states[user_id]['withdrawal_amount'] = amount
                 user_states[user_id]['step'] = 'AWAITING_WITHDRAWAL_METHOD'
-
                 await context.bot.send_message(
                     chat_id,
                     "<b>কোন মাধ্যমে টাকা উত্তোলন করতে চান তা নির্বাচন করুন:</b>",
@@ -964,52 +885,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 )
                 return
-
             except ValueError:
                 await context.bot.send_message(
-                    chat_id,
-                    "<b>অনুগ্রহ করে সঠিক সংখ্যা দিন।</b>",
-                    parse_mode='HTML'
+                    chat_id, "<b>অনুগ্রহ করে সঠিক সংখ্যা দিন।</b>", parse_mode='HTML'
                 )
                 return
 
         elif step == 'AWAITING_WITHDRAWAL_METHOD':
             if text != "বিকাশ":
                 await context.bot.send_message(
-                    chat_id,
-                    "<b>অনুগ্রহ করে 'বিকাশ' নির্বাচন করুন।</b>",
-                    parse_mode='HTML'
+                    chat_id, "<b>অনুগ্রহ করে 'বিকাশ' নির্বাচন করুন।</b>", parse_mode='HTML'
                 )
                 return
-
             user_states[user_id]['withdrawal_method'] = text
             user_states[user_id]['step'] = 'AWAITING_WITHDRAWAL_NUMBER'
-
             await context.bot.send_message(
-                chat_id,
-                "<b>আপনার বিকাশ নাম্বারটি প্রদান করুন:</b>",
-                parse_mode='HTML',
-                reply_markup=ReplyKeyboardMarkup(
-                    [[KeyboardButton("❌ বাতিল")]],
-                    resize_keyboard=True
-                )
+                chat_id, "<b>আপনার বিকাশ নাম্বারটি প্রদান করুন:</b>", parse_mode='HTML',
+                reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ বাতিল")]], resize_keyboard=True)
             )
             return
 
         elif step == 'AWAITING_WITHDRAWAL_NUMBER':
-            number = text
-            user_states[user_id]['withdrawal_number'] = number
+            user_states[user_id]['withdrawal_number'] = text
             user_states[user_id]['step'] = 'AWAITING_WITHDRAWAL_CONFIRM'
-
             await context.bot.send_message(
                 chat_id,
-                f"""<b>উত্তোলনের বিবরণ:</b>
-
-পরিমাণ: <b>{user_states[user_id]['withdrawal_amount']} টাকা</b>
-মাধ্যম: <b>{user_states[user_id]['withdrawal_method']}</b>
-নাম্বার: <b>{number}</b>
-
-<b>সব ঠিক থাকলে '✅ সাবমিট' বাটনে ক্লিক করুন।</b>""",
+                f"<b>উত্তোলনের বিবরণ:</b>\n\n"
+                f"পরিমাণ: <b>{user_states[user_id]['withdrawal_amount']} টাকা</b>\n"
+                f"মাধ্যম: <b>{user_states[user_id]['withdrawal_method']}</b>\n"
+                f"নাম্বার: <b>{text}</b>\n\n"
+                f"<b>সব ঠিক থাকলে '✅ সাবমিট' বাটনে ক্লিক করুন।</b>",
                 parse_mode='HTML',
                 reply_markup=ReplyKeyboardMarkup(
                     [[KeyboardButton("✅ সাবমিট")], [KeyboardButton("❌ বাতিল")]],
@@ -1024,8 +929,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 method = user_states[user_id]['withdrawal_method']
                 number = user_states[user_id]['withdrawal_number']
 
-                withdrawal_ref = db.collection('withdrawals').document()
-                withdrawal_ref.set({
+                db.collection('withdrawals').document().set({
                     'user_id': user_id,
                     'amount': amount,
                     'method': method,
@@ -1034,9 +938,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     'notified': False,
                     'timestamp': google_firestore.SERVER_TIMESTAMP
                 })
-
                 del user_states[user_id]
-
                 await context.bot.send_message(
                     chat_id,
                     "<b>আপনার উত্তোলনের রিকোয়েস্ট সফলভাবে সাবমিট হয়েছে। এডমিন চেক করার পর আপনার টাকা পাঠিয়ে দেওয়া হবে।</b>",
@@ -1044,7 +946,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=get_main_keyboard()
                 )
             else:
-                # Unrecognized input in confirm step — remind the user
                 await context.bot.send_message(
                     chat_id,
                     "<b>সাবমিট করতে '✅ সাবমিট' বাটনে চাপুন অথবা বাতিল করতে '❌ বাতিল' চাপুন।</b>",
@@ -1143,7 +1044,7 @@ def main():
     flask_thread.daemon = True
     flask_thread.start()
 
-    logger.info(f"🚀 Server running on port {PORT}")
+    logger.info(f"Bot running on port {PORT}")
 
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
