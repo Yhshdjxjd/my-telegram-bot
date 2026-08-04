@@ -14,8 +14,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKe
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from telegram.error import TelegramError
 import firebase_admin
-from firebase_admin import credentials, firestore, initialize_app
-from google.cloud import firestore as google_firestore
+from firebase_admin import credentials, firestore
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -45,7 +44,7 @@ try:
     if os.getenv('FIREBASE_SERVICE_ACCOUNT'):
         service_account = json.loads(os.getenv('FIREBASE_SERVICE_ACCOUNT'))
         cred = credentials.Certificate(service_account)
-        initialize_app(cred)
+        firebase_admin.initialize_app(cred)
         db = firestore.client()
         logger.info('Firebase initialized successfully.')
     else:
@@ -57,7 +56,7 @@ except Exception as e:
 # Constants
 # ==========================================
 MAIN_CHANNEL = "@income_box1"
-SUPPORT_CHANNEL = os.getenv('SUPPORT_CHANNEL_ID', "-1003951413076")
+SUPPORT_CHANNEL = os.getenv('SUPPORT_CHANNEL_ID', '-1003951413076')
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 
 # User states storage
@@ -181,7 +180,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'referral_bonus_paid': False,
                 'total_earned': 0,
                 'successful_tasks': 0,
-                'joined_at': google_firestore.SERVER_TIMESTAMP
+                'joined_at': firestore.SERVER_TIMESTAMP
             })
 
     is_member = await check_membership(context.bot, user_id)
@@ -547,13 +546,13 @@ async def handle_instagram_finish(update: Update, context: ContextTypes.DEFAULT_
             'price': 4.30,
             'review_status': 'pending',
             'notified': False,
-            'timestamp': google_firestore.SERVER_TIMESTAMP
+            'timestamp': firestore.SERVER_TIMESTAMP
         }
         try:
             db.collection('completed_tasks').add(completed_task)
             db.collection('tasks').document(user_states[user_id]['task_doc_id']).update({
                 'status': 'completed',
-                'attempted_by': google_firestore.ArrayUnion([user_id])
+                'attempted_by': firestore.ArrayUnion([user_id])
             })
         except Exception as e:
             logger.error(e)
@@ -636,11 +635,7 @@ async def handle_facebook_task(update: Update, context: ContextTypes.DEFAULT_TYP
 
         db.collection('tasks').document(task_doc.id).update({'status': 'assigned'})
 
-        # -------------------------------------------------------
-        # Resolve field names flexibly — Firestore field names
-        # may vary (snake_case, camelCase, etc.)
-        # Lo�g actual keys so you can verify in server logs.
-        # -------------------------------------------------------
+        # Resolve field names flexibly
         logger.info(f"FB task doc fields: {list(task_data.keys())}")
 
         fb_first_name = get_field(
@@ -793,13 +788,13 @@ async def handle_facebook_finish(update: Update, context: ContextTypes.DEFAULT_T
             'price': 6.55,
             'review_status': 'pending',
             'notified': False,
-            'timestamp': google_firestore.SERVER_TIMESTAMP
+            'timestamp': firestore.SERVER_TIMESTAMP
         }
         try:
             db.collection('completed_tasks').add(completed_task)
             db.collection('tasks').document(user_states[user_id]['task_doc_id']).update({
                 'status': 'completed',
-                'attempted_by': google_firestore.ArrayUnion([user_id])
+                'attempted_by': firestore.ArrayUnion([user_id])
             })
         except Exception as e:
             logger.error(e)
@@ -827,16 +822,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not text:
         return
 
-    # -------------------------------------------------------
     # CANCEL: Handle at the very top — works from ANY state
-    # -------------------------------------------------------
     if text == "❌ বাতিল":
         await handle_cancel(update, context)
         return
 
-    # -------------------------------------------------------
     # STATE-BASED FLOW
-    # -------------------------------------------------------
     if user_id in user_states:
         step = user_states[user_id].get('step')
 
@@ -854,7 +845,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 user_doc = db.collection('users').document(str(user_id)).get()
                 user_data = user_doc.to_dict() or {}
-          �      total_earned = user_data.get('total_earned', 0)
+                total_earned = user_data.get('total_earned', 0)
 
                 withdrawals_snapshot = db.collection('withdrawals').where('user_id', '==', user_id).get()
                 total_withdrawn = 0
@@ -936,7 +927,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     'number': number,
                     'status': 'pending',
                     'notified': False,
-                    'timestamp': google_firestore.SERVER_TIMESTAMP
+                    'timestamp': firestore.SERVER_TIMESTAMP
                 })
                 del user_states[user_id]
                 await context.bot.send_message(
@@ -971,9 +962,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # AWAITING_ACCOUNT_FINISH, FB_AWAITING_SUBMIT) — fall through to
         # button handlers below so explicit buttons still work.
 
-    # -------------------------------------------------------
     # MAIN MENU & BUTTON ROUTING
-    # -------------------------------------------------------
     if text == "💰 ব্যালেন্স":
         await handle_balance(update, context)
     elif text == "💼 কাজ":
