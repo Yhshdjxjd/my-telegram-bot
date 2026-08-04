@@ -5,6 +5,8 @@ import logging
 import random
 import threading
 import time
+import re
+import base64
 from datetime import datetime
 from typing import Dict, Any, Optional
 
@@ -16,6 +18,7 @@ from telegram.error import TelegramError
 import firebase_admin
 from firebase_admin import credentials, firestore
 from dotenv import load_dotenv
+import pyotp
 
 # Load environment variables
 load_dotenv()
@@ -74,6 +77,44 @@ def get_field(data: dict, *keys: str) -> str:
     return ''
 
 # ==========================================
+# 2FA Helper Functions
+# ==========================================
+def process_2fa_key(key_string: str) -> str:
+    """
+    2FA Recovery Key থেকে TOTP Secret বের করা
+    যেমন: MHJG 7XBT NYCT H5XN YOB4 DWDK GORZ D2DN
+    """
+    # স্পেস রিমুভ করুন এবং আপারকেস করুন
+    key = re.sub(r'\s+', '', key_string.upper())
+    
+    # যদি 'otpauth://' ইউআরএল হয়
+    if 'otpauth://' in key_string:
+        import urllib.parse
+        parsed = urllib.parse.urlparse(key_string)
+        params = urllib.parse.parse_qs(parsed.query)
+        if 'secret' in params:
+            return params['secret'][0]
+    
+    # Base32 ডিকোড করা যায় কিনা চেক করুন
+    try:
+        base64.b32decode(key)
+        return key
+    except:
+        # যদি না পারে, তাহলে রিটার্ন করুন
+        return key
+
+def generate_totp_code(secret_key: str) -> str:
+    """
+    TOTP কোড জেনারেট করুন
+    """
+    try:
+        totp = pyotp.TOTP(secret_key)
+        return totp.now()
+    except Exception as e:
+        logger.error(f"TOTP generation error: {e}")
+        return None
+
+# ==========================================
 # Keyboard Functions
 # ==========================================
 def get_main_keyboard():
@@ -123,6 +164,12 @@ async def clear_user_state(user_id: int, bot, chat_id: int = None):
                 state['timeout_task'].cancel()
             except Exception:
                 pass
+        # Cancel TOTP timer if exists
+        if state.get('totp_timer'):
+            try:
+                state['totp_timer'].cancel()
+            except Exception:
+                pass
         # Release the task back to pending in DB
         if state.get('task_doc_id') and db:
             try:
@@ -156,6 +203,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if state.get('timeout_task'):
             try:
                 state['timeout_task'].cancel()
+            except Exception:
+                pass
+        if state.get('totp_timer'):
+            try:
+                state['totp_timer'].cancel()
             except Exception:
                 pass
         if state.get('task_doc_id') and db:
@@ -447,6 +499,12 @@ async def handle_instagram_2fa_task(update: Update, context: ContextTypes.DEFAUL
                         db.collection('tasks').document(task_doc.id).update({'status': 'pending'})
                 except Exception as e:
                     logger.error(e)
+                # Cancel TOTP timer if exists
+                if user_id in user_states and user_states[user_id].get('totp_timer'):
+                    try:
+                        user_states[user_id]['totp_timer'].cancel()
+                    except:
+                        pass
                 del user_states[user_id]
                 await context.bot.send_message(
                     chat_id,
@@ -491,7 +549,8 @@ async def handle_instagram_2fa_set(update: Update, context: ContextTypes.DEFAULT
 
     user_states[user_id]['step'] = 'AWAITING_2FA_KEY'
     await context.bot.send_message(
-        chat_id, "🔑 <b>2FA Key টি দিন:</b> ❤️", parse_mode='HTML',
+        chat_id, "🔑 <b>2FA Key টি দিন:</b> ❤️\n\nযেমন: MHJG 7XBT NYCT H5XN YOB4 DWDK GORZ D2DN", 
+        parse_mode='HTML',
         reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ বাতিল")]], resize_keyboard=True)
     )
 
@@ -503,34 +562,132 @@ async def handle_instagram_how_to(update: Update, context: ContextTypes.DEFAULT_
         "1️⃣ প্রদত্ত ইউজারনেম ও পাসওয়ার্ড দিয়ে অ্যাকাউন্টে লগইন করুন\n"
         "2️⃣ 2FA সেটআপ করুন (যদি প্রয়োজন হয়)\n"
         "3️⃣ 2FA Key কপি করে পাঠান\n"
-        "4️⃣ \"অ্যাকাউন্ট খোলা শেষ\" বাটনে ক্লিক করুন\n\n"
+        "4️⃣ বট আপনাকে TOTP কোড দেবে যা Instagram এ ব্যবহার করবেন\n"
+        "5️⃣ লগইন成功后 \"অ্যাকাউন্ট খোলা শেষ\" বাটনে ক্লিক করুন\n\n"
         "💰 পেমেন্ট পাবেন ২-৭২ ঘন্টার মধ্যে",
         parse_mode='HTML'
     )
 
+# ==========================================
+# Updated Instagram 2FA Key Handler with TOTP
+# ==========================================
 async def handle_instagram_2fa_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
-
-    user_states[user_id]['step'] = 'AWAITING_ACCOUNT_FINISH'
-    user_states[user_id]['two_fa_key'] = update.message.text
-
-    code = str(random.randint(100000, 999999))
-    await context.bot.send_message(
-        chat_id,
-        f"অ্যাকাউন্ট খোলা শেষ হলে নিচের বাটনে চাপ দিন:\n"
-        f"নিচের কোডটির উপর চাপ দিলে অটোমেটিক কপি হয়ে যাবে ❤️\n\n"
-        f"🔑 <code>{code}</code>",
-        parse_mode='HTML'
-    )
-    await context.bot.send_message(
-        chat_id, "<b>কাজ শেষ হলে নিচের বাটনে ক্লিক করুন:</b>", parse_mode='HTML',
-        reply_markup=ReplyKeyboardMarkup(
-            [[KeyboardButton("✅ অ্যাকাউন্ট খোলা শেষ")], [KeyboardButton("❌ বাতিল")]],
-            resize_keyboard=True
+    
+    two_fa_key = update.message.text.strip()
+    
+    try:
+        # 2FA Key প্রসেস করুন
+        secret_key = process_2fa_key(two_fa_key)
+        
+        # TOTP কোড জেনারেট করুন
+        totp_code = generate_totp_code(secret_key)
+        
+        if not totp_code:
+            await context.bot.send_message(
+                chat_id,
+                "❌ <b>2FA Key প্রসেস করতে সমস্যা হয়েছে!</b>\n\n"
+                "দয়া করে সঠিক 2FA Recovery Key দিন।\n"
+                "ফরম্যাট: MHJG 7XBT NYCT H5XN YOB4 DWDK GORZ D2DN",
+                parse_mode='HTML'
+            )
+            return
+        
+        # TOTP কোড সেভ করুন
+        user_states[user_id]['step'] = 'AWAITING_ACCOUNT_FINISH'
+        user_states[user_id]['two_fa_key'] = two_fa_key
+        user_states[user_id]['totp_secret'] = secret_key
+        user_states[user_id]['last_totp'] = totp_code
+        
+        # TOTP আপডেট করার টাইমার ফাংশন
+        async def update_totp_timer():
+            try:
+                totp = pyotp.TOTP(secret_key)
+                while True:
+                    await asyncio.sleep(30)
+                    if user_id in user_states and user_states[user_id].get('step') == 'AWAITING_ACCOUNT_FINISH':
+                        new_code = totp.now()
+                        user_states[user_id]['last_totp'] = new_code
+                        try:
+                            await context.bot.send_message(
+                                chat_id,
+                                f"🔄 <b>নতুন TOTP কোড:</b> <code>{new_code}</code>\n"
+                                f"⏱️ এই কোডটি Instagram এ ব্যবহার করুন।",
+                                parse_mode='HTML'
+                            )
+                        except:
+                            break
+                    else:
+                        break
+            except:
+                pass
+        
+        # TOTP টাইমার স্টার্ট করুন
+        user_states[user_id]['totp_timer'] = asyncio.create_task(update_totp_timer())
+        
+        await context.bot.send_message(
+            chat_id,
+            f"✅ <b>2FA Key সফলভাবে প্রসেস করা হয়েছে!</b>\n\n"
+            f"🔑 <b>বর্তমান TOTP কোড:</b> <code>{totp_code}</code>\n\n"
+            f"📌 এখন এই ধাপগুলো করুন:\n"
+            f"1️⃣ Instagram এ লগইন করুন (দেওয়া ইউজারনেম ও পাসওয়ার্ড দিয়ে)\n"
+            f"2️⃣ 2FA কোড চাইলে উপরের <code>{totp_code}</code> দিন\n"
+            f"3️⃣ লগইন成功后 '✅ অ্যাকাউন্ট খোলা শেষ' বাটনে ক্লিক করুন\n\n"
+            f"⚠️ মনে রাখবেন: এই কোড প্রতি ৩০ সেকেন্ডে পরিবর্তন হয়!\n"
+            f"🔄 নতুন কোড পেতে '🔄 নতুন কোড জেনারেট' বাটনে ক্লিক করুন।",
+            parse_mode='HTML',
+            reply_markup=ReplyKeyboardMarkup(
+                [[KeyboardButton("✅ অ্যাকাউন্ট খোলা শেষ")], 
+                 [KeyboardButton("🔄 নতুন কোড জেনারেট"), 
+                  KeyboardButton("❌ বাতিল")]],
+                resize_keyboard=True
+            )
         )
-    )
+        
+    except Exception as e:
+        logger.error(f"2FA process error: {e}")
+        await context.bot.send_message(
+            chat_id,
+            "❌ <b>2FA Key প্রসেস করতে সমস্যা হয়েছে!</b>\n\n"
+            "দয়া করে সঠিক 2FA Recovery Key দিন।\n"
+            "ফরম্যাট: MHJG 7XBT NYCT H5XN YOB4 DWDK GORZ D2DN",
+            parse_mode='HTML'
+        )
 
+# ==========================================
+# New TOTP Code Generator Handler
+# ==========================================
+async def handle_new_totp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    
+    if user_id not in user_states or user_states[user_id].get('step') != 'AWAITING_ACCOUNT_FINISH':
+        return
+    
+    secret = user_states[user_id].get('totp_secret')
+    if secret:
+        try:
+            totp = pyotp.TOTP(secret)
+            new_code = totp.now()
+            user_states[user_id]['last_totp'] = new_code
+            await context.bot.send_message(
+                chat_id,
+                f"🔄 <b>নতুন TOTP কোড:</b> <code>{new_code}</code>\n"
+                f"⏱️ এই কোডটি Instagram এ ব্যবহার করুন।",
+                parse_mode='HTML'
+            )
+        except Exception as e:
+            logger.error(f"TOTP generation error: {e}")
+            await context.bot.send_message(
+                chat_id,
+                "❌ <b>কোড জেনারেট করতে সমস্যা হয়েছে!</b>",
+                parse_mode='HTML'
+            )
+
+# ==========================================
+# Updated Instagram Finish Handler
+# ==========================================
 async def handle_instagram_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
@@ -543,6 +700,7 @@ async def handle_instagram_finish(update: Update, context: ContextTypes.DEFAULT_
             'username': user_states[user_id].get('assigned_username'),
             'password': user_states[user_id].get('password'),
             'two_fa_key': user_states[user_id].get('two_fa_key'),
+            'totp_used': user_states[user_id].get('last_totp'),
             'price': 4.30,
             'review_status': 'pending',
             'notified': False,
@@ -554,16 +712,37 @@ async def handle_instagram_finish(update: Update, context: ContextTypes.DEFAULT_
                 'status': 'completed',
                 'attempted_by': firestore.ArrayUnion([user_id])
             })
+            
+            # ইউজারের টোটাল আয় আপডেট করুন
+            user_ref = db.collection('users').document(str(user_id))
+            user_doc = user_ref.get()
+            if user_doc.exists:
+                user_data = user_doc.to_dict()
+                current_earned = user_data.get('total_earned', 0)
+                user_ref.update({
+                    'total_earned': current_earned + 4.30,
+                    'successful_tasks': firestore.Increment(1)
+                })
+            
         except Exception as e:
-            logger.error(e)
+            logger.error(f"Error saving task: {e}")
 
+    # TOTP টাইমার বন্ধ করুন
+    if user_states[user_id].get('totp_timer'):
+        try:
+            user_states[user_id]['totp_timer'].cancel()
+        except:
+            pass
+    
     if user_states[user_id].get('timeout_task'):
         user_states[user_id]['timeout_task'].cancel()
+    
     del user_states[user_id]
 
     await context.bot.send_message(
         chat_id,
         "✅ <b>আপনার Instagram কাজ সফলভাবে জমা হয়েছে!</b>\n"
+        "💰 <b>আপনার আয়:</b> 4.30 BDT\n"
         "⏳ পেমেন্ট ২ ঘন্টা থেকে ৭২ ঘন্টার মধ্যে দেওয়া হবে। আরো কাজ করতে থাকুন। 🎯",
         parse_mode='HTML',
         reply_markup=get_main_keyboard()
@@ -796,6 +975,18 @@ async def handle_facebook_finish(update: Update, context: ContextTypes.DEFAULT_T
                 'status': 'completed',
                 'attempted_by': firestore.ArrayUnion([user_id])
             })
+            
+            # ইউজারের টোটাল আয় আপডেট করুন
+            user_ref = db.collection('users').document(str(user_id))
+            user_doc = user_ref.get()
+            if user_doc.exists:
+                user_data = user_doc.to_dict()
+                current_earned = user_data.get('total_earned', 0)
+                user_ref.update({
+                    'total_earned': current_earned + 6.55,
+                    'successful_tasks': firestore.Increment(1)
+                })
+                
         except Exception as e:
             logger.error(e)
 
@@ -806,6 +997,7 @@ async def handle_facebook_finish(update: Update, context: ContextTypes.DEFAULT_T
     await context.bot.send_message(
         chat_id,
         "🎉 📘 <b>Facebook কাজ সফলভাবে জমা হয়েছে!</b>\n"
+        "💰 <b>আপনার আয়:</b> 6.55 BDT\n"
         "⏳ পেমেন্ট ২ ঘন্টা থেকে ৭২ ঘন্টার মধ্যে দেওয়া হবে।",
         parse_mode='HTML',
         reply_markup=get_main_keyboard()
@@ -985,6 +1177,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_instagram_2fa_set(update, context)
     elif text == "⚙️ কিভাবে কাজ করব":
         await handle_instagram_how_to(update, context)
+    elif text == "🔄 নতুন কোড জেনারেট":
+        await handle_new_totp(update, context)
     elif text == "✅ অ্যাকাউন্ট খোলা শেষ":
         if user_id in user_states:
             step = user_states[user_id].get('step')
