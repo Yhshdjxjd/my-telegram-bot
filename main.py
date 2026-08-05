@@ -2,9 +2,6 @@ import os
 import json
 import asyncio
 import logging
-import random
-import threading
-import time
 import re
 import base64
 import urllib.parse
@@ -20,6 +17,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from dotenv import load_dotenv
 import pyotp
+import threading
 
 # Load environment variables
 load_dotenv()
@@ -216,11 +214,6 @@ async def clear_user_state(user_id: int, bot, chat_id: int = None):
                 state['timeout_task'].cancel()
             except Exception:
                 pass
-        if state.get('totp_timer'):
-            try:
-                state['totp_timer'].cancel()
-            except Exception:
-                pass
         if state.get('task_doc_id') and db:
             try:
                 db.collection('tasks').document(state['task_doc_id']).update({'status': 'pending'})
@@ -377,20 +370,21 @@ async def handle_tasks_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings_doc = db.collection('settings').document('app_settings').get()
     settings = settings_doc.to_dict() if settings_doc.exists else {}
 
-    ig_set = settings.get('instagram', {'enabled': True, 'price': 4.30})
-    fb_set = settings.get('facebook', {'enabled': True, 'price': 6.55})
-    gm_set = settings.get('gmail', {'enabled': True, 'price': 3.00})
+    # Default value set to False so no demo tasks appear before admin turns them on
+    ig_set = settings.get('instagram', {'enabled': False, 'price': 0.0})
+    fb_set = settings.get('facebook', {'enabled': False, 'price': 0.0})
+    gm_set = settings.get('gmail', {'enabled': False, 'price': 0.0})
 
     keyboard = []
     
-    if ig_set.get('enabled', True):
-        keyboard.append([KeyboardButton(f"📸 ইনস্টাগ্রাম কাজ (৳{ig_set.get('price', 4.30):.2f})")])
+    if ig_set.get('enabled', False):
+        keyboard.append([KeyboardButton(f"📸 ইনস্টাগ্রাম কাজ (৳{ig_set.get('price', 0.0):.2f})")])
         
-    if fb_set.get('enabled', True):
-        keyboard.append([KeyboardButton(f"📘 ফেসবুক কাজ (৳{fb_set.get('price', 6.55):.2f})")])
+    if fb_set.get('enabled', False):
+        keyboard.append([KeyboardButton(f"📘 ফেসবুক কাজ (৳{fb_set.get('price', 0.0):.2f})")])
         
-    if gm_set.get('enabled', True):
-        keyboard.append([KeyboardButton(f"📧 জিমেইল কাজ (৳{gm_set.get('price', 3.00):.2f})")])
+    if gm_set.get('enabled', False):
+        keyboard.append([KeyboardButton(f"📧 জিমেইল কাজ (৳{gm_set.get('price', 0.0):.2f})")])
 
     keyboard.append([KeyboardButton("❌ বাতিল")])
 
@@ -498,11 +492,6 @@ async def assign_task(platform: str, chat_id: int, user_id: int, context: Contex
                         db.collection('tasks').document(task_doc.id).update({'status': 'pending'})
                 except Exception:
                     pass
-                if user_id in user_states and user_states[user_id].get('totp_timer'):
-                    try:
-                        user_states[user_id]['totp_timer'].cancel()
-                    except:
-                        pass
                 del user_states[user_id]
                 await context.bot.send_message(
                     chat_id,
@@ -531,12 +520,12 @@ async def assign_task(platform: str, chat_id: int, user_id: int, context: Contex
             user_states[user_id] = state
             
             bot_text = (
-                f"👤 <b>ইউজারনেম:</b> <code>{state['assigned_username']}</code>\n"
-                f"🔐 <b>পাসওয়ার্ড:</b> <code>{state['password']}</code>\n\n"
-                f"📸 উপরের ইউজারনেম এবং পাসওয়ার্ড দিয়ে অ্যাকাউন্টে লগইন করুন। তারপর নিচে <b>🔐 2FA Set</b> বাটনে ক্লিক করুন 👀"
+                f"👤 Username: <code>{state['assigned_username']}</code>\n"
+                f"🔐 Password: <code>{state['password']}</code>\n\n"
+                f"📸 উপরের ইউজারনেম এবং পাসওয়ার্ড দিয়ে অ্যাকাউন্ট খুলুন। তারপর নিচে 2FA Set বাটনে ক্লিক করুন 🤫"
             )
             markup = ReplyKeyboardMarkup([
-                [KeyboardButton("🔐 2FA Set"), KeyboardButton("⚙️ কিভাবে কাজ করব")],
+                [KeyboardButton("🔐 2FA Set")],
                 [KeyboardButton("❌ বাতিল")]
             ], resize_keyboard=True)
             await context.bot.send_message(chat_id, bot_text, parse_mode='HTML', reply_markup=markup)
@@ -595,7 +584,7 @@ async def handle_instagram_2fa_set(update: Update, context: ContextTypes.DEFAULT
         return
     user_states[user_id]['step'] = 'AWAITING_2FA_KEY'
     await context.bot.send_message(
-        chat_id, "🔑 <b>2FA Key টি দিন:</b> ❤️\n\nযেমন: MHJG 7XBT NYCT H5XN YOB4 DWDK GORZ D2DN", 
+        chat_id, "🔑 <b>2FA Key টি দিন:</b> ⬇️", 
         parse_mode='HTML', reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ বাতিল")]], resize_keyboard=True)
     )
 
@@ -617,61 +606,37 @@ async def handle_instagram_2fa_key(update: Update, context: ContextTypes.DEFAULT
         user_states[user_id]['totp_secret'] = secret_key
         user_states[user_id]['last_totp'] = totp_code
         
-        async def update_totp_timer():
-            try:
-                totp = pyotp.TOTP(secret_key)
-                while True:
-                    await asyncio.sleep(30)
-                    if user_id in user_states and user_states[user_id].get('step') == 'AWAITING_ACCOUNT_FINISH':
-                        new_code = totp.now()
-                        user_states[user_id]['last_totp'] = new_code
-                        try:
-                            await context.bot.send_message(
-                                chat_id, f"🔄 <b>নতুন TOTP কোড:</b> <code>{new_code}</code>\n⏱️ এই কোডটি Instagram এ ব্যবহার করুন।", parse_mode='HTML'
-                            )
-                        except:
-                            break
-                    else:
-                        break
-            except:
-                pass
-        
-        user_states[user_id]['totp_timer'] = asyncio.create_task(update_totp_timer())
-        
+        # Message 1
         await context.bot.send_message(
             chat_id,
-            f"✅ <b>2FA Key সফলভাবে প্রসেস করা হয়েছে!</b>\n\n"
-            f"🔑 <b>বর্তমান TOTP কোড:</b> <code>{totp_code}</code>\n\n"
-            f"📌 এখন এই ধাপগুলো করুন:\n"
-            f"1️⃣ Instagram এ লগইন করুন\n"
-            f"2️⃣ 2FA কোড চাইলে উপরের <code>{totp_code}</code> দিন\n"
-            f"3️⃣ লগইন সফল হলে '✅ অ্যাকাউন্ট খোলা শেষ' বাটনে ক্লিক করুন\n\n"
-            f"⚠️ এই কোড প্রতি ৩০ সেকেন্ডে পরিবর্তন হয়।",
+            "অ্যাকাউন্ট খোলা শেষ হলে নিচের বাটনে চাপ দিন:",
             parse_mode='HTML',
             reply_markup=ReplyKeyboardMarkup([
                 [KeyboardButton("✅ অ্যাকাউন্ট খোলা শেষ")], 
-                [KeyboardButton("🔄 নতুন কোড জেনারেট"), KeyboardButton("❌ বাতিল")]
+                [KeyboardButton("❌ বাতিল")]
             ], resize_keyboard=True)
+        )
+
+        # Message 2
+        await context.bot.send_message(
+            chat_id,
+            "নিচের বাটনে চাপ দিয়ে কোডটি কপি করুন ⤵️",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"📋 {totp_code}", callback_data="dummy_copy")]
+            ])
         )
     except Exception as e:
         logger.error(f"2FA process error: {e}")
         await context.bot.send_message(chat_id, "❌ <b>2FA Key প্রসেস করতে সমস্যা হয়েছে!</b>", parse_mode='HTML')
 
-async def handle_new_totp(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-    if user_id not in user_states or user_states[user_id].get('step') != 'AWAITING_ACCOUNT_FINISH':
-        return
-    secret = user_states[user_id].get('totp_secret')
-    if secret:
-        try:
-            totp = pyotp.TOTP(secret)
-            new_code = totp.now()
-            user_states[user_id]['last_totp'] = new_code
-            await context.bot.send_message(chat_id, f"🔄 <b>নতুন TOTP কোড:</b> <code>{new_code}</code>\n⏱️ এই কোডটি Instagram এ ব্যবহার করুন।", parse_mode='HTML')
-        except Exception as e:
-            logger.error(f"TOTP generation error: {e}")
-            await context.bot.send_message(chat_id, "❌ <b>কোড জেনারেট করতে সমস্যা হয়েছে!</b>", parse_mode='HTML')
+async def dummy_copy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    try:
+        code = query.message.reply_markup.inline_keyboard[0][0].text.replace("📋 ", "")
+        await query.answer(f"আপনার কোড: {code}\nকোডটি মেসেজ থেকে কপি করে নিন।", show_alert=True)
+    except:
+        await query.answer("Copied!")
 
 # 2. Facebook
 async def handle_facebook_uid_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -760,10 +725,6 @@ async def handle_task_finish(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.error(f"Error saving task: {e}")
 
     # Clear timers and states
-    if state.get('totp_timer'):
-        try:
-            state['totp_timer'].cancel()
-        except: pass
     if state.get('timeout_task'):
         try:
             state['timeout_task'].cancel()
@@ -774,7 +735,7 @@ async def handle_task_finish(update: Update, context: ContextTypes.DEFAULT_TYPE)
         chat_id,
         f"✅ <b>আপনার {platform} কাজ সফলভাবে রিভিউতে জমা হয়েছে!</b>\n"
         f"💰 <b>অ্যাপ্রুভ হলে আয়:</b> {price:.2f} BDT\n"
-        f"⏳ এডমিন রিভিউ শেষ হলে નોটিফিকেশন পাবেন।",
+        f"⏳ এডমিন রিভিউ শেষ হলে নোটিফিকেশন পাবেন।",
         parse_mode='HTML',
         reply_markup=get_main_keyboard()
     )
@@ -923,8 +884,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id, "প্রদত্ত ইউজারনেম ও পাসওয়ার্ড দিয়ে লগইন করুন। 2FA সেট করে কোড দিন।", parse_mode='HTML')
     elif text == "🤫 কিভাবে কাজ করব":
         await context.bot.send_message(chat_id, "তথ্য দিয়ে লগইন করে UID ও Cookies দিন।", parse_mode='HTML')
-    elif text == "🔄 নতুন কোড জেনারেট":
-        await handle_new_totp(update, context)
     elif text == "🟢 Send UID":
         await handle_facebook_uid_btn(update, context)
     elif text == "✅ অ্যাকাউন্ট খোলা শেষ":
@@ -956,6 +915,7 @@ def main():
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(verify_join_callback, pattern="verify_join"))
+    application.add_handler(CallbackQueryHandler(dummy_copy_callback, pattern="dummy_copy"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     def run_flask():
