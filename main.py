@@ -66,47 +66,106 @@ BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 user_states: Dict[int, Dict[str, Any]] = {}
 
 # ==========================================
-# Helper: resolve a field from multiple possible keys
+# Background Tasks Checker
+# ==========================================
+async def check_reviewed_tasks(application: Application):
+    """Admin প্যানেল থেকে Approve/Reject করলে ইউজারকে নোটিফিকেশন দেওয়ার ব্যাকগ্রাউন্ড টাস্ক"""
+    while True:
+        try:
+            if db:
+                # টাস্ক রিভিউ চেক করা
+                tasks = db.collection('completed_tasks').where('notified', '==', False).get()
+                for task in tasks:
+                    data = task.to_dict()
+                    status = data.get('review_status', 'pending')
+                    
+                    if status in ['approved', 'rejected']:
+                        user_id = data.get('user_id') or data.get('userId')
+                        platform = data.get('platform', 'Unknown')
+                        price = data.get('price', 0)
+
+                        if user_id:
+                            if status == 'approved':
+                                text = f"✅ <b>আপনার {platform} কাজটি অনুমোদিত হয়েছে!</b>\n💰 আপনার অ্যাকাউন্টে {price} BDT যোগ করা হয়েছে।"
+                            else:
+                                text = f"❌ <b>আপনার {platform} কাজটি প্রত্যাখ্যাত হয়েছে!</b>\n⚠️ সঠিক তথ্য প্রদান না করার কারণে কাজ বাতিল করা হয়েছে। আপনার ব্যালেন্স থেকে {price} BDT কেটে নেওয়া হয়েছে।"
+                            
+                            try:
+                                await application.bot.send_message(chat_id=int(user_id), text=text, parse_mode='HTML')
+                            except Exception as e:
+                                logger.error(f"Failed to send notification to {user_id}: {e}")
+
+                        # ডাটাবেজে notified আপডেট করা
+                        db.collection('completed_tasks').document(task.id).update({'notified': True})
+
+                        # যদি রিজেক্ট হয়, তবে ব্যালেন্স কেটে নেওয়া (যেহেতু সাবমিট করার সময় এড করা হয়েছিল)
+                        if status == 'rejected' and user_id:
+                            user_ref = db.collection('users').document(str(user_id))
+                            user_doc = user_ref.get()
+                            if user_doc.exists:
+                                user_data = user_doc.to_dict()
+                                current_earned = user_data.get('total_earned', 0)
+                                successful_tasks = user_data.get('successful_tasks', 0)
+                                user_ref.update({
+                                    'total_earned': max(0, current_earned - price),
+                                    'successful_tasks': max(0, successful_tasks - 1)
+                                })
+                                
+                # উইথড্র রিকোয়েস্ট চেক করা
+                withdrawals = db.collection('withdrawals').where('notified', '==', False).get()
+                for w in withdrawals:
+                    data = w.to_dict()
+                    status = data.get('status', 'pending')
+                    if status in ['approved', 'rejected']:
+                        user_id = data.get('user_id')
+                        amount = data.get('amount', 0)
+                        if user_id:
+                            if status == 'approved':
+                                text = f"✅ <b>আপনার {amount} টাকার উত্তোলন অনুমোদিত হয়েছে!</b>\nটাকা আপনার অ্যাকাউন্টে পাঠানো হয়েছে।"
+                            else:
+                                text = f"❌ <b>আপনার {amount} টাকার উত্তোলন বাতিল করা হয়েছে!</b>"
+                            try:
+                                await application.bot.send_message(chat_id=int(user_id), text=text, parse_mode='HTML')
+                            except Exception:
+                                pass
+                        db.collection('withdrawals').document(w.id).update({'notified': True})
+                        
+        except Exception as e:
+            logger.error(f"Error checking reviewed tasks: {e}")
+
+        # প্রতি ১০ সেকেন্ড পরপর চেক করবে
+        await asyncio.sleep(10)
+
+async def post_init(application: Application):
+    """বট স্টার্ট হওয়ার পর ব্যাকগ্রাউন্ড টাস্ক চালু করা"""
+    asyncio.create_task(check_reviewed_tasks(application))
+
+
+# ==========================================
+# Helper functions & Handlers
 # ==========================================
 def get_field(data: dict, *keys: str) -> str:
-    """Try each key in order and return the first non-empty value."""
     for key in keys:
         val = data.get(key, '')
         if val:
             return str(val)
     return ''
 
-# ==========================================
-# 2FA Helper Functions
-# ==========================================
 def process_2fa_key(key_string: str) -> str:
-    """
-    2FA Recovery Key থেকে TOTP Secret বের করা
-    যেমন: MHJG 7XBT NYCT H5XN YOB4 DWDK GORZ D2DN
-    """
-    # স্পেস রিমুভ করুন এবং আপারকেস করুন
     key = re.sub(r'\s+', '', key_string.upper())
-    
-    # যদি 'otpauth://' ইউআরএল হয়
     if 'otpauth://' in key_string:
         import urllib.parse
         parsed = urllib.parse.urlparse(key_string)
         params = urllib.parse.parse_qs(parsed.query)
         if 'secret' in params:
             return params['secret'][0]
-    
-    # Base32 ডিকোড করা যায় কিনা চেক করুন
     try:
         base64.b32decode(key)
         return key
     except:
-        # যদি না পারে, তাহলে রিটার্ন করুন
         return key
 
 def generate_totp_code(secret_key: str) -> str:
-    """
-    TOTP কোড জেনারেট করুন
-    """
     try:
         totp = pyotp.TOTP(secret_key)
         return totp.now()
@@ -114,9 +173,6 @@ def generate_totp_code(secret_key: str) -> str:
         logger.error(f"TOTP generation error: {e}")
         return None
 
-# ==========================================
-# Keyboard Functions
-# ==========================================
 def get_main_keyboard():
     keyboard = [
         [KeyboardButton("💰 ব্যালেন্স"), KeyboardButton("💼 কাজ")],
@@ -134,9 +190,6 @@ def get_task_menu_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# ==========================================
-# Helper Functions
-# ==========================================
 async def check_membership(bot, user_id: int) -> bool:
     try:
         main_member = await bot.get_chat_member(MAIN_CHANNEL, user_id)
@@ -155,32 +208,25 @@ async def check_membership(bot, user_id: int) -> bool:
         return False
 
 async def clear_user_state(user_id: int, bot, chat_id: int = None):
-    """Clear user state and clean up tasks. Always sends cancel message."""
     if user_id in user_states:
         state = user_states[user_id]
-        # Cancel any pending timeout task
         if state.get('timeout_task'):
             try:
                 state['timeout_task'].cancel()
             except Exception:
                 pass
-        # Cancel TOTP timer if exists
         if state.get('totp_timer'):
             try:
                 state['totp_timer'].cancel()
             except Exception:
                 pass
-        # Release the task back to pending in DB
         if state.get('task_doc_id') and db:
             try:
-                db.collection('tasks').document(state['task_doc_id']).update({
-                    'status': 'pending'
-                })
+                db.collection('tasks').document(state['task_doc_id']).update({'status': 'pending'})
             except Exception as e:
                 logger.error(e)
         del user_states[user_id]
 
-    # Always send cancel confirmation and main keyboard
     if chat_id:
         await bot.send_message(
             chat_id,
@@ -189,15 +235,11 @@ async def clear_user_state(user_id: int, bot, chat_id: int = None):
             reply_markup=get_main_keyboard()
         )
 
-# ==========================================
-# Telegram Bot Handlers
-# ==========================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     user = update.effective_user
 
-    # Clear any existing state on /start
     if user_id in user_states:
         state = user_states[user_id]
         if state.get('timeout_task'):
@@ -418,14 +460,10 @@ async def handle_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle cancel — always works from any state."""
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     await clear_user_state(user_id, context.bot, chat_id)
 
-# ==========================================
-# Instagram Task Handlers
-# ==========================================
 async def handle_instagram_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
@@ -499,7 +537,6 @@ async def handle_instagram_2fa_task(update: Update, context: ContextTypes.DEFAUL
                         db.collection('tasks').document(task_doc.id).update({'status': 'pending'})
                 except Exception as e:
                     logger.error(e)
-                # Cancel TOTP timer if exists
                 if user_id in user_states and user_states[user_id].get('totp_timer'):
                     try:
                         user_states[user_id]['totp_timer'].cancel()
@@ -563,14 +600,11 @@ async def handle_instagram_how_to(update: Update, context: ContextTypes.DEFAULT_
         "2️⃣ 2FA সেটআপ করুন (যদি প্রয়োজন হয়)\n"
         "3️⃣ 2FA Key কপি করে পাঠান\n"
         "4️⃣ বট আপনাকে TOTP কোড দেবে যা Instagram এ ব্যবহার করবেন\n"
-        "5️⃣ লগইন成功后 \"অ্যাকাউন্ট খোলা শেষ\" বাটনে ক্লিক করুন\n\n"
+        "5️⃣ লগইন সফল হলে \"অ্যাকাউন্ট খোলা শেষ\" বাটনে ক্লিক করুন\n\n"
         "💰 পেমেন্ট পাবেন ২-৭২ ঘন্টার মধ্যে",
         parse_mode='HTML'
     )
 
-# ==========================================
-# Updated Instagram 2FA Key Handler with TOTP
-# ==========================================
 async def handle_instagram_2fa_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
@@ -578,10 +612,7 @@ async def handle_instagram_2fa_key(update: Update, context: ContextTypes.DEFAULT
     two_fa_key = update.message.text.strip()
     
     try:
-        # 2FA Key প্রসেস করুন
         secret_key = process_2fa_key(two_fa_key)
-        
-        # TOTP কোড জেনারেট করুন
         totp_code = generate_totp_code(secret_key)
         
         if not totp_code:
@@ -594,13 +625,11 @@ async def handle_instagram_2fa_key(update: Update, context: ContextTypes.DEFAULT
             )
             return
         
-        # TOTP কোড সেভ করুন
         user_states[user_id]['step'] = 'AWAITING_ACCOUNT_FINISH'
         user_states[user_id]['two_fa_key'] = two_fa_key
         user_states[user_id]['totp_secret'] = secret_key
         user_states[user_id]['last_totp'] = totp_code
         
-        # TOTP আপডেট করার টাইমার ফাংশন
         async def update_totp_timer():
             try:
                 totp = pyotp.TOTP(secret_key)
@@ -623,7 +652,6 @@ async def handle_instagram_2fa_key(update: Update, context: ContextTypes.DEFAULT
             except:
                 pass
         
-        # TOTP টাইমার স্টার্ট করুন
         user_states[user_id]['totp_timer'] = asyncio.create_task(update_totp_timer())
         
         await context.bot.send_message(
@@ -633,7 +661,7 @@ async def handle_instagram_2fa_key(update: Update, context: ContextTypes.DEFAULT
             f"📌 এখন এই ধাপগুলো করুন:\n"
             f"1️⃣ Instagram এ লগইন করুন (দেওয়া ইউজারনেম ও পাসওয়ার্ড দিয়ে)\n"
             f"2️⃣ 2FA কোড চাইলে উপরের <code>{totp_code}</code> দিন\n"
-            f"3️⃣ লগইন成功后 '✅ অ্যাকাউন্ট খোলা শেষ' বাটনে ক্লিক করুন\n\n"
+            f"3️⃣ লগইন সফল হলে '✅ অ্যাকাউন্ট খোলা শেষ' বাটনে ক্লিক করুন\n\n"
             f"⚠️ মনে রাখবেন: এই কোড প্রতি ৩০ সেকেন্ডে পরিবর্তন হয়!\n"
             f"🔄 নতুন কোড পেতে '🔄 নতুন কোড জেনারেট' বাটনে ক্লিক করুন।",
             parse_mode='HTML',
@@ -655,9 +683,6 @@ async def handle_instagram_2fa_key(update: Update, context: ContextTypes.DEFAULT
             parse_mode='HTML'
         )
 
-# ==========================================
-# New TOTP Code Generator Handler
-# ==========================================
 async def handle_new_totp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
@@ -685,9 +710,6 @@ async def handle_new_totp(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='HTML'
             )
 
-# ==========================================
-# Updated Instagram Finish Handler
-# ==========================================
 async def handle_instagram_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
@@ -713,7 +735,6 @@ async def handle_instagram_finish(update: Update, context: ContextTypes.DEFAULT_
                 'attempted_by': firestore.ArrayUnion([user_id])
             })
             
-            # ইউজারের টোটাল আয় আপডেট করুন
             user_ref = db.collection('users').document(str(user_id))
             user_doc = user_ref.get()
             if user_doc.exists:
@@ -727,7 +748,6 @@ async def handle_instagram_finish(update: Update, context: ContextTypes.DEFAULT_
         except Exception as e:
             logger.error(f"Error saving task: {e}")
 
-    # TOTP টাইমার বন্ধ করুন
     if user_states[user_id].get('totp_timer'):
         try:
             user_states[user_id]['totp_timer'].cancel()
@@ -743,14 +763,11 @@ async def handle_instagram_finish(update: Update, context: ContextTypes.DEFAULT_
         chat_id,
         "✅ <b>আপনার Instagram কাজ সফলভাবে জমা হয়েছে!</b>\n"
         "💰 <b>আপনার আয়:</b> 4.30 BDT\n"
-        "⏳ পেমেন্ট ২ ঘন্টা থেকে ৭২ ঘন্টার মধ্যে দেওয়া হবে। আরো কাজ করতে থাকুন। 🎯",
+        "⏳ পেমেন্ট ২ ঘন্টা থেকে ৭২ ঘন্টার মধ্যে দেওয়া হবে। এডমিন রিভিউ শেষ হলে নোটিফিকেশন পাবেন। 🎯",
         parse_mode='HTML',
         reply_markup=get_main_keyboard()
     )
 
-# ==========================================
-# Facebook Task Handlers
-# ==========================================
 async def handle_facebook_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
@@ -814,23 +831,9 @@ async def handle_facebook_task(update: Update, context: ContextTypes.DEFAULT_TYP
 
         db.collection('tasks').document(task_doc.id).update({'status': 'assigned'})
 
-        # Resolve field names flexibly
-        logger.info(f"FB task doc fields: {list(task_data.keys())}")
-
-        fb_first_name = get_field(
-            task_data,
-            'first_name', 'firstName', 'fname',
-            'First_Name', 'First Name', 'first', 'name'
-        )
-        fb_last_name = get_field(
-            task_data,
-            'last_name', 'lastName', 'lname',
-            'Last_Name', 'Last Name', 'last'
-        )
-        fb_password = get_field(
-            task_data,
-            'password', 'Password', 'pass', 'pwd', 'passwd'
-        )
+        fb_first_name = get_field(task_data, 'first_name', 'firstName', 'fname', 'First_Name', 'First Name', 'first', 'name')
+        fb_last_name = get_field(task_data, 'last_name', 'lastName', 'lname', 'Last_Name', 'Last Name', 'last')
+        fb_password = get_field(task_data, 'password', 'Password', 'pass', 'pwd', 'passwd')
 
         async def task_timeout():
             await asyncio.sleep(30 * 60)
@@ -976,7 +979,6 @@ async def handle_facebook_finish(update: Update, context: ContextTypes.DEFAULT_T
                 'attempted_by': firestore.ArrayUnion([user_id])
             })
             
-            # ইউজারের টোটাল আয় আপডেট করুন
             user_ref = db.collection('users').document(str(user_id))
             user_doc = user_ref.get()
             if user_doc.exists:
@@ -998,14 +1000,11 @@ async def handle_facebook_finish(update: Update, context: ContextTypes.DEFAULT_T
         chat_id,
         "🎉 📘 <b>Facebook কাজ সফলভাবে জমা হয়েছে!</b>\n"
         "💰 <b>আপনার আয়:</b> 6.55 BDT\n"
-        "⏳ পেমেন্ট ২ ঘন্টা থেকে ৭২ ঘন্টার মধ্যে দেওয়া হবে।",
+        "⏳ পেমেন্ট ২ ঘন্টা থেকে ৭২ ঘন্টার মধ্যে দেওয়া হবে। এডমিন রিভিউ শেষ হলে নোটিফিকেশন পাবেন।",
         parse_mode='HTML',
         reply_markup=get_main_keyboard()
     )
 
-# ==========================================
-# Message Handler (Main menu and flow)
-# ==========================================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     chat_id = update.effective_chat.id
@@ -1014,16 +1013,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not text:
         return
 
-    # CANCEL: Handle at the very top — works from ANY state
     if text == "❌ বাতিল":
         await handle_cancel(update, context)
         return
 
-    # STATE-BASED FLOW
     if user_id in user_states:
         step = user_states[user_id].get('step')
 
-        # --- Withdrawal flow ---
         if step == 'AWAITING_WITHDRAWAL_AMOUNT':
             try:
                 amount = float(text)
@@ -1034,7 +1030,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         parse_mode='HTML'
                     )
                     return
-
                 user_doc = db.collection('users').document(str(user_id)).get()
                 user_data = user_doc.to_dict() or {}
                 total_earned = user_data.get('total_earned', 0)
@@ -1136,25 +1131,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             return
 
-        # --- Instagram flow ---
         elif step == 'AWAITING_2FA_KEY':
             await handle_instagram_2fa_key(update, context)
             return
-
-        # --- Facebook flow ---
         elif step == 'FB_AWAITING_UID':
             await handle_facebook_uid(update, context)
             return
-
         elif step == 'FB_AWAITING_COOKIES':
             await handle_facebook_cookies(update, context)
             return
 
-        # For other states (AWAITING_ACCOUNT_CREATION, FB_AWAITING_UID_BTN,
-        # AWAITING_ACCOUNT_FINISH, FB_AWAITING_SUBMIT) — fall through to
-        # button handlers below so explicit buttons still work.
-
-    # MAIN MENU & BUTTON ROUTING
     if text == "💰 ব্যালেন্স":
         await handle_balance(update, context)
     elif text == "💼 কাজ":
@@ -1214,7 +1200,8 @@ def main():
         logger.error("TELEGRAM_BOT_TOKEN is not set. Bot will not start.")
         return
 
-    application = Application.builder().token(BOT_TOKEN).build()
+    # এখানে post_init যুক্ত করা হয়েছে ব্যাকগ্রাউন্ড টাস্ক চালানোর জন্য
+    application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(verify_join_callback, pattern="verify_join"))
