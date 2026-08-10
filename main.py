@@ -5,10 +5,10 @@ import logging
 import re
 import base64
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, send_file
 from flask_cors import CORS
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
@@ -98,24 +98,16 @@ async def check_reviewed_tasks(application: Application):
                         # ডাটাবেজে notified আপডেট করা
                         db.collection('completed_tasks').document(task.id).update({'notified': True})
 
-                        # ব্যালেন্স আপডেট (Approve হলে ব্যালেন্স অ্যাড হবে)
+                        # ব্যালেন্স আপডেট (Approve হলে ব্যালেন্স অ্যাড হবে - Concurrency Safe)
                         if status == 'approved' and user_id:
                             user_ref = db.collection('users').document(str(user_id))
-                            user_doc = user_ref.get()
-                            if user_doc.exists:
-                                user_data = user_doc.to_dict()
-                                current_earned = user_data.get('total_earned', 0.0)
-                                successful_tasks = user_data.get('successful_tasks', 0)
-                                user_ref.update({
-                                    'total_earned': current_earned + float(price),
-                                    'successful_tasks': successful_tasks + 1
-                                })
-                            else:
+                            try:
                                 user_ref.set({
-                                    'total_earned': float(price),
-                                    'successful_tasks': 1,
-                                    'balance': 0 # Legacy field fallback
+                                    'total_earned': firestore.Increment(float(price)),
+                                    'successful_tasks': firestore.Increment(1)
                                 }, merge=True)
+                            except Exception as e:
+                                logger.error(f"Error updating balance for {user_id}: {e}")
                                 
                 # উইথড্র রিকোয়েস্ট চেক করা
                 withdrawals = db.collection('withdrawals').where('notified', '==', False).get()
@@ -323,9 +315,8 @@ async def handle_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_earned = user_data.get('total_earned', 0.0)
         successful_tasks = user_data.get('successful_tasks', 0)
 
-        pending_tasks_snapshot = db.collection('completed_tasks')\
-            .where('user_id', '==', user_id).where('review_status', '==', 'pending').get()
-        pending_tasks = len(pending_tasks_snapshot)
+        tasks_snapshot = db.collection('completed_tasks').where('user_id', '==', user_id).get()
+        pending_tasks = sum(1 for doc in tasks_snapshot if doc.to_dict().get('review_status') == 'pending')
 
         withdrawals_snapshot = db.collection('withdrawals').where('user_id', '==', user_id).get()
         total_withdrawn = 0.0
@@ -446,42 +437,39 @@ async def handle_withdrawal(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================================
 # Task Assigners (IG, FB, Gmail)
 # ==========================================
+def get_dynamic_password() -> str:
+    tz = timezone(timedelta(hours=6))
+    now = datetime.now(tz)
+    day = f"{now.day:02d}"
+    return f"Forhad@{day}"
+
+@firestore.transactional
+def _assign_task_tx(transaction, platform, user_id):
+    tasks_ref = db.collection('tasks').where('platform', '==', platform)
+    docs = tasks_ref.stream(transaction=transaction)
+    for doc in docs:
+        data = doc.to_dict()
+        if data.get('status') == 'pending' and user_id not in data.get('attempted_by', []):
+            transaction.update(doc.reference, {'status': 'assigned'})
+            return doc, data
+    return None, None
+
 async def assign_task(platform: str, chat_id: int, user_id: int, context: ContextTypes.DEFAULT_TYPE):
     if not db:
         return
         
     try:
-        tasks_snapshot = db.collection('tasks')\
-            .where('platform', '==', platform).where('status', '==', 'pending').limit(10).get()
-
-        if len(tasks_snapshot) == 0:
-            await context.bot.send_message(
-                chat_id,
-                f"😔 <b>দুঃখিত, বর্তমানে {platform} এর কোনো কাজ উপলব্ধ নেই। এডমিন কাজ অ্যাড করলে আবার চেষ্টা করুন।</b>",
-                parse_mode='HTML',
-                reply_markup=get_main_keyboard()
-            )
-            return
-
-        task_doc = None
-        task_data = None
-        for doc in tasks_snapshot:
-            data = doc.to_dict()
-            if user_id not in data.get('attempted_by', []):
-                task_doc = doc
-                task_data = data
-                break
+        transaction = db.transaction()
+        task_doc, task_data = _assign_task_tx(transaction, platform, user_id)
 
         if not task_doc:
             await context.bot.send_message(
                 chat_id,
-                f"😔 <b>দুঃখিত, আপনার জন্য বর্তমানে {platform} এর কোনো নতুন কাজ উপলব্ধ নেই।</b>",
+                f"😔 <b>দুঃখিত, বর্তমানে {platform} এর নতুন কোনো কাজ নেই। এডমিন কাজ অ্যাড করলে আবার চেষ্টা করুন।</b>",
                 parse_mode='HTML',
                 reply_markup=get_main_keyboard()
             )
             return
-
-        db.collection('tasks').document(task_doc.id).update({'status': 'assigned'})
 
         # Timeout task to reset assignment if user takes too long
         async def task_timeout():
@@ -513,10 +501,12 @@ async def assign_task(platform: str, chat_id: int, user_id: int, context: Contex
         state['price'] = settings.get(platform.lower(), {}).get('price', 0.0)
 
         # Handle specific platforms
+        dynamic_password = get_dynamic_password()
+
         if platform == 'Instagram':
             state['step'] = 'AWAITING_ACCOUNT_CREATION'
             state['assigned_username'] = task_data.get('username', '')
-            state['password'] = task_data.get('password', '')
+            state['password'] = dynamic_password
             user_states[user_id] = state
             
             bot_text = (
@@ -534,7 +524,7 @@ async def assign_task(platform: str, chat_id: int, user_id: int, context: Contex
             state['step'] = 'FB_AWAITING_UID_BTN'
             state['first_name'] = get_field(task_data, 'firstName', 'first_name', 'fname')
             state['last_name'] = get_field(task_data, 'lastName', 'last_name', 'lname')
-            state['password'] = get_field(task_data, 'password', 'Password')
+            state['password'] = dynamic_password
             user_states[user_id] = state
             
             bot_text = (
@@ -553,7 +543,7 @@ async def assign_task(platform: str, chat_id: int, user_id: int, context: Contex
         elif platform == 'Gmail':
             state['step'] = 'GM_AWAITING_FINISH'
             state['email'] = get_field(task_data, 'email', 'Email')
-            state['password'] = get_field(task_data, 'password', 'Password')
+            state['password'] = dynamic_password
             user_states[user_id] = state
             
             bot_text = (
@@ -620,23 +610,12 @@ async def handle_instagram_2fa_key(update: Update, context: ContextTypes.DEFAULT
         # Message 2
         await context.bot.send_message(
             chat_id,
-            "নিচের বাটনে চাপ দিয়ে কোডটি কপি করুন ⤵️",
-            parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(f"📋 {totp_code}", callback_data="dummy_copy")]
-            ])
+            f"নিচের কোডটিতে ক্লিক করলেই কপি হয়ে যাবে ⤵️\n\n<code>{totp_code}</code>",
+            parse_mode='HTML'
         )
     except Exception as e:
         logger.error(f"2FA process error: {e}")
         await context.bot.send_message(chat_id, "❌ <b>2FA Key প্রসেস করতে সমস্যা হয়েছে!</b>", parse_mode='HTML')
-
-async def dummy_copy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    try:
-        code = query.message.reply_markup.inline_keyboard[0][0].text.replace("📋 ", "")
-        await query.answer(f"আপনার কোড: {code}\nকোডটি মেসেজ থেকে কপি করে নিন।", show_alert=True)
-    except:
-        await query.answer("Copied!")
 
 # 2. Facebook
 async def handle_facebook_uid_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -903,6 +882,10 @@ def health():
 def home():
     return "Bot Server is Running!"
 
+@app.route('/admin')
+def admin_panel():
+    return send_file('admin.html')
+
 # ==========================================
 # Main Application
 # ==========================================
@@ -915,7 +898,6 @@ def main():
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(verify_join_callback, pattern="verify_join"))
-    application.add_handler(CallbackQueryHandler(dummy_copy_callback, pattern="dummy_copy"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     def run_flask():
