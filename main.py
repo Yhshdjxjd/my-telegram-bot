@@ -57,7 +57,7 @@ except Exception as e:
 # ==========================================
 # Constants
 # ==========================================
-MAIN_CHANNEL = "@income_box_x"
+MAIN_CHANNEL = "https://t.me/income_box_x"
 SUPPORT_CHANNEL = os.getenv('SUPPORT_CHANNEL_ID', '-1003951413076')
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 
