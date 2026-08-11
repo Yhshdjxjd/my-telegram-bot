@@ -57,10 +57,9 @@ except Exception as e:
 # ==========================================
 # Constants
 # ==========================================
-MAIN_CHANNEL = "https://t.me/income_box_x"
+MAIN_CHANNEL = -1003697051602  # আপনার মেইন চ্যানেল আইডি
 SUPPORT_CHANNEL = os.getenv('SUPPORT_CHANNEL_ID', '-1003951413076')
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-
 # User states storage
 user_states: Dict[int, Dict[str, Any]] = {}
 
