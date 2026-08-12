@@ -55,23 +55,17 @@ except Exception as e:
     logger.error(f'Failed to initialize Firebase: {e}')
 
 # ==========================================
-# Constants - FIXED ✅
+# Constants
 # ==========================================
-# ✅ মেইন চ্যানেলের সঠিক ইউজারনেম (আন্ডারস্কোর সহ কিন্তু @ ছাড়া)
-MAIN_CHANNEL_USERNAME = "income_box_x"  # @ ছাড়া
-MAIN_CHANNEL_URL = "https://t.me/income_box_x"  # ✅ সঠিক URL
-
-# সাপোর্ট চ্যানেল
-SUPPORT_CHANNEL_USERNAME = os.getenv('SUPPORT_CHANNEL_ID', 'support_channel')  # @ ছাড়া
-SUPPORT_CHANNEL_URL = os.getenv('SUPPORT_CHANNEL_URL', 'https://t.me/+MDnz3-C-7FkzZDY1')
-
+MAIN_CHANNEL = "@income_box_x"
+SUPPORT_CHANNEL = os.getenv('SUPPORT_CHANNEL_ID', '@support_channel')
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 
 # User states storage
 user_states: Dict[int, Dict[str, Any]] = {}
 
 # ==========================================
-# Background Tasks Checker - FIXED
+# Background Tasks Checker
 # ==========================================
 async def check_reviewed_tasks(application: Application):
     """Admin প্যানেল থেকে Approve/Reject করলে ইউজারকে নোটিফিকেশন দেওয়ার ব্যাকগ্রাউন্ড টাস্ক"""
@@ -101,10 +95,8 @@ async def check_reviewed_tasks(application: Application):
                             except Exception as e:
                                 logger.error(f"Failed to send notification to {user_id}: {e}")
 
-                        # ডাটাবেজে notified আপডেট করা
                         db.collection('completed_tasks').document(task.id).update({'notified': True})
 
-                        # ব্যালেন্স আপডেট (balance + total_earned)
                         if status == 'approved' and user_id:
                             user_ref = db.collection('users').document(str(user_id))
                             try:
@@ -192,53 +184,23 @@ def get_main_keyboard():
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 # ==========================================
-# ✅ FIXED: Membership Check Function
+# Fixed: Membership Check - Both Channels
 # ==========================================
 async def check_membership(bot, user_id: int) -> bool:
-    """চেক করে ইউজার চ্যানেলে জয়েন করেছে কিনা"""
+    """দুইটা চ্যানেলেই জয়েন আছে কিনা চেক করে"""
     try:
-        main_valid = False
-        support_valid = False
+        # মেইন চ্যানেল চেক
+        main_member = await bot.get_chat_member(MAIN_CHANNEL, user_id)
+        main_valid = main_member.status in ['member', 'administrator', 'creator']
         
-        # ✅ মেইন চ্যানেল চেক
+        # সাপোর্ট চ্যানেল চেক
         try:
-            # ইউজারনেম ক্লিন করা
-            main_channel = MAIN_CHANNEL_USERNAME
-            if main_channel.startswith('@'):
-                main_channel = main_channel[1:]
-            
-            # চ্যানেল মেম্বার চেক
-            main_member = await bot.get_chat_member(f"@{main_channel}", user_id)
-            main_valid = main_member.status in ['member', 'administrator', 'creator']
-            logger.info(f"Main channel check for {user_id}: {main_valid}")
-            
-        except TelegramError as e:
-            if "Chat not found" in str(e):
-                logger.error(f"❌ Main channel @{MAIN_CHANNEL_USERNAME} not found! Please check the username.")
-                logger.info(f"💡 Make sure the channel is public and the username is correct.")
-            else:
-                logger.error(f"Main channel error: {e}")
-        except Exception as e:
-            logger.error(f"Main channel unexpected error: {e}")
-
-        # ✅ সাপোর্ট চ্যানেল চেক
-        try:
-            support_channel = SUPPORT_CHANNEL_USERNAME
-            if support_channel.startswith('@'):
-                support_channel = support_channel[1:]
-                
-            support_member = await bot.get_chat_member(f"@{support_channel}", user_id)
+            support_member = await bot.get_chat_member(SUPPORT_CHANNEL, user_id)
             support_valid = support_member.status in ['member', 'administrator', 'creator']
-            logger.info(f"Support channel check for {user_id}: {support_valid}")
-            
-        except TelegramError as e:
-            if "Chat not found" in str(e):
-                logger.error(f"❌ Support channel @{SUPPORT_CHANNEL_USERNAME} not found! Please check the username.")
-            else:
-                logger.error(f"Support channel error: {e}")
-        except Exception as e:
-            logger.error(f"Support channel unexpected error: {e}")
-
+        except:
+            support_valid = False
+        
+        # দুইটাই ভ্যালিড হতে হবে
         return main_valid and support_valid
         
     except Exception as e:
@@ -309,10 +271,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ✅ FIXED: সঠিক চ্যানেল URL ব্যবহার করা হয়েছে
     inline_keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📢 জয়েন করুন: মেইন চ্যানেল", url=MAIN_CHANNEL_URL)],  # ✅ সঠিক URL
-        [InlineKeyboardButton("📢 জয়েন করুন: Support", url=SUPPORT_CHANNEL_URL)],
+        [InlineKeyboardButton("📢 জয়েন করুন: মেইন চ্যানেল", url="https://t.me/income_box_x")],
+        [InlineKeyboardButton("📢 জয়েন করুন: Support", url="https://t.me/+MDnz3-C-7FkzZDY1")],
         [InlineKeyboardButton("✅ Verify (ভেরিফাই)", callback_data="verify_join")]
     ])
     await context.bot.send_message(
@@ -344,12 +305,10 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         )
     else:
         await query.answer("❌ ভেরিফিকেশন ব্যর্থ হয়েছে!", show_alert=True)
-        
-        # ✅ আবার চ্যানেল জয়েন করতে বলুন
         inline_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📢 জয়েন করুন: মেইন চ্যানেল", url=MAIN_CHANNEL_URL)],
-            [InlineKeyboardButton("📢 জয়েন করুন: Support", url=SUPPORT_CHANNEL_URL)],
-            [InlineKeyboardButton("✅ পুনরায় Verify", callback_data="verify_join")]
+            [InlineKeyboardButton("📢 জয়েন করুন: মেইন চ্যানেল", url="https://t.me/income_box_x")],
+            [InlineKeyboardButton("📢 জয়েন করুন: Support", url="https://t.me/+MDnz3-C-7FkzZDY1")],
+            [InlineKeyboardButton("🔄 পুনরায় Verify", callback_data="verify_join")]
         ])
         await context.bot.send_message(
             chat_id,
@@ -920,11 +879,6 @@ def main():
     if not BOT_TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN is not set. Bot will not start.")
         return
-
-    # ✅ চ্যানেল তথ্য লগে দেখান
-    logger.info(f"✅ Main Channel: @{MAIN_CHANNEL_USERNAME}")
-    logger.info(f"✅ Main Channel URL: {MAIN_CHANNEL_URL}")
-    logger.info(f"✅ Support Channel: @{SUPPORT_CHANNEL_USERNAME}")
 
     application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
