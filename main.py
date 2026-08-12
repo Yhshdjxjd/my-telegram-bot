@@ -12,7 +12,7 @@ from flask import Flask, jsonify, send_file
 from flask_cors import CORS
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
-from telegram.error import TelegramError
+from telegram.error import TelegramError, BadRequest
 import firebase_admin
 from firebase_admin import credentials, firestore
 from dotenv import load_dotenv
@@ -55,17 +55,69 @@ except Exception as e:
     logger.error(f'Failed to initialize Firebase: {e}')
 
 # ==========================================
-# Constants - FIXED
+# Constants - 🔥 FIXED: @ ছাড়া ইউজারনাম
 # ==========================================
-MAIN_CHANNEL = "@income_box_x"  # ✅ ইউজারনেম দিয়ে চেক করো
-SUPPORT_CHANNEL = os.getenv('SUPPORT_CHANNEL_ID', '@support_channel')  # ✅ ইউজারনেম
+MAIN_CHANNEL = "income_box_x"  # 🔥 আপনার মেইন চ্যানেলের ইউজারনাম (@ ছাড়া)
+SUPPORT_CHANNEL = "income_box_x_support"  # 🔥 আপনার সাপোর্ট চ্যানেলের ইউজারনাম (@ ছাড়া)
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 
 # User states storage
 user_states: Dict[int, Dict[str, Any]] = {}
 
 # ==========================================
-# Background Tasks Checker - FIXED
+# 🔥 FIXED: Improved Membership Check
+# ==========================================
+async def check_membership(bot, user_id: int) -> bool:
+    """ইউজার দুটি চ্যানেলেই জয়েন আছে কিনা চেক করে - 🔥 সম্পূর্ণ ফিক্সড"""
+    try:
+        # ইউজারনাম থেকে @ সরিয়ে ফেলি (নিরাপত্তার জন্য)
+        main_channel = MAIN_CHANNEL.lstrip('@')
+        support_channel = SUPPORT_CHANNEL.lstrip('@')
+        
+        logger.info(f"Checking membership for user {user_id} in channels: @{main_channel}, @{support_channel}")
+        
+        main_valid = False
+        support_valid = False
+        
+        # মেইন চ্যানেল চেক
+        try:
+            main_member = await bot.get_chat_member(f"@{main_channel}", user_id)
+            # 🔥 সঠিক স্ট্যাটাস চেক: 'member', 'administrator', 'creator'
+            main_valid = main_member.status in ['member', 'administrator', 'creator']
+            logger.info(f"Main channel @{main_channel}: {main_valid} (status: {main_member.status})")
+        except BadRequest as e:
+            if "user not found" in str(e).lower():
+                logger.warning(f"User {user_id} not found in main channel")
+            else:
+                logger.error(f"Main channel error: {e}")
+            main_valid = False
+        except Exception as e:
+            logger.error(f"Main channel unexpected error: {e}")
+            main_valid = False
+
+        # সাপোর্ট চ্যানেল চেক
+        try:
+            support_member = await bot.get_chat_member(f"@{support_channel}", user_id)
+            support_valid = support_member.status in ['member', 'administrator', 'creator']
+            logger.info(f"Support channel @{support_channel}: {support_valid} (status: {support_member.status})")
+        except BadRequest as e:
+            if "user not found" in str(e).lower():
+                logger.warning(f"User {user_id} not found in support channel")
+            else:
+                logger.error(f"Support channel error: {e}")
+            support_valid = False
+        except Exception as e:
+            logger.error(f"Support channel unexpected error: {e}")
+            support_valid = False
+
+        return main_valid and support_valid
+        
+    except Exception as e:
+        logger.error(f"Membership check error: {e}")
+        return False
+
+# ==========================================
+# Background Tasks Checker
 # ==========================================
 async def check_reviewed_tasks(application: Application):
     """Admin প্যানেল থেকে Approve/Reject করলে ইউজারকে নোটিফিকেশন দেওয়ার ব্যাকগ্রাউন্ড টাস্ক"""
@@ -104,7 +156,7 @@ async def check_reviewed_tasks(application: Application):
                             try:
                                 user_ref.set({
                                     'total_earned': firestore.Increment(float(price)),
-                                    'balance': firestore.Increment(float(price)),  # ✅ যোগ করো
+                                    'balance': firestore.Increment(float(price)),
                                     'successful_tasks': firestore.Increment(1)
                                 }, merge=True)
                             except Exception as e:
@@ -121,7 +173,6 @@ async def check_reviewed_tasks(application: Application):
                         if user_id:
                             if status == 'approved':
                                 text = f"✅ <b>আপনার {amount} টাকার উত্তোলন অনুমোদিত হয়েছে!</b>\nটাকা আপনার অ্যাকাউন্টে পাঠানো হয়েছে।"
-                                # 🔥 FIX: Withdraw approved হলে balance কাটো
                                 user_ref = db.collection('users').document(str(user_id))
                                 user_ref.set({
                                     'balance': firestore.Increment(-float(amount))
@@ -139,7 +190,6 @@ async def check_reviewed_tasks(application: Application):
         except Exception as e:
             logger.error(f"Error checking reviewed tasks: {e}")
 
-        # প্রতি ১০ সেকেন্ড পরপর চেক করবে
         await asyncio.sleep(10)
 
 async def post_init(application: Application):
@@ -187,24 +237,6 @@ def get_main_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-async def check_membership(bot, user_id: int) -> bool:
-    try:
-        # ✅ ইউজারনেম দিয়ে চেক করো
-        main_member = await bot.get_chat_member(MAIN_CHANNEL, user_id)
-        main_valid = main_member.status in ['member', 'administrator', 'creator']
-
-        support_valid = False
-        try:
-            support_member = await bot.get_chat_member(SUPPORT_CHANNEL, user_id)
-            support_valid = support_member.status in ['member', 'administrator', 'creator']
-        except Exception as e:
-            logger.error(f"Support channel check error: {e}")
-
-        return main_valid and support_valid
-    except Exception as e:
-        logger.error(f"Membership check error: {e}")
-        return False
-
 async def clear_user_state(user_id: int, bot, chat_id: int = None):
     if user_id in user_states:
         state = user_states[user_id]
@@ -233,7 +265,7 @@ async def clear_user_state(user_id: int, bot, chat_id: int = None):
 # ==========================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
+    user_id = update.effective_user.id  # 🔥 সঠিক user_id
     user = update.effective_user
 
     await clear_user_state(user_id, context.bot)
@@ -245,7 +277,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             referred_by = None
             if context.args and context.args[0] != str(user_id):
                 referred_by = context.args[0]
-            # ✅ FIX: balance ফিল্ড যোগ করো
             user_ref.set({
                 'first_name': user.first_name or '',
                 'last_name': user.last_name or '',
@@ -253,7 +284,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'referred_by': referred_by,
                 'referral_bonus_paid': False,
                 'total_earned': 0.0,
-                'balance': 0.0,  # ✅ যোগ করো
+                'balance': 0.0,
                 'successful_tasks': 0,
                 'joined_at': firestore.SERVER_TIMESTAMP
             })
@@ -271,8 +302,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     inline_keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📢 জয়েন করুন: মেইন চ্যানেল", url="https://t.me/income_box1")],
-        [InlineKeyboardButton("📢 জয়েন করুন: Support", url="https://t.me/+MDnz3-C-7FkzZDY1")],
+        [InlineKeyboardButton("📢 জয়েন করুন: মেইন চ্যানেল", url="https://t.me/income_box_x")],  # 🔥 আপনার চ্যানেল লিংক
+        [InlineKeyboardButton("📢 জয়েন করুন: Support", url="https://t.me/income_box_x_support")],  # 🔥 আপনার সাপোর্ট লিংক
         [InlineKeyboardButton("✅ Verify (ভেরিফাই)", callback_data="verify_join")]
     ])
     await context.bot.send_message(
@@ -287,7 +318,7 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
 
     chat_id = query.message.chat_id
-    user_id = query.from_user.id
+    user_id = query.from_user.id  # 🔥 সঠিক user_id
     user = query.from_user
 
     is_member = await check_membership(context.bot, user_id)
@@ -303,10 +334,10 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             reply_markup=get_main_keyboard()
         )
     else:
-        await query.answer("ভেরিফিকেশন ব্যর্থ হয়েছে!", show_alert=True)
+        await query.answer("❌ ভেরিফিকেশন ব্যর্থ হয়েছে! দয়া করে চ্যানেলগুলোতে জয়েন করুন।", show_alert=True)
         await context.bot.send_message(
             chat_id,
-            "🚫 <b>আপনি এখনো চ্যানেলগুলোতে জয়েন করেননি! দয়া করে জয়েন করুন।</b>",
+            "🚫 <b>আপনি এখনো চ্যানেলগুলোতে জয়েন করেননি! দয়া করে জয়েন করুন এবং আবার Verify চাপুন।</b>",
             parse_mode='HTML'
         )
 
@@ -337,7 +368,6 @@ async def handle_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if data.get('status') == 'pending':
                 pending_withdrawal += data.get('amount', 0.0)
 
-        # 🔥 FIX: balance ফিল্ড থেকে সরাসরি দেখাও
         current_balance = user_data.get('balance', 0.0)
 
         balance_text = f"""💵 <b>আপনার ব্যালেন্স ড্যাশবোর্ড</b>
@@ -364,10 +394,13 @@ async def handle_tasks_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     is_member = await check_membership(context.bot, user_id)
     if not is_member:
-        await context.bot.send_message(chat_id, "⚠️ <b>দয়া করে প্রথমে চ্যানেলে জয়েন করুন!</b>", parse_mode='HTML')
+        await context.bot.send_message(
+            chat_id, 
+            "⚠️ <b>দয়া করে প্রথমে চ্যানেলে জয়েন করুন! /start দিয়ে আবার চেষ্টা করুন।</b>", 
+            parse_mode='HTML'
+        )
         return
 
-    # 🔥 FIX: settings/rates ডকুমেন্ট থেকে পড়ো
     settings_doc = db.collection('settings').document('rates').get()
     settings = settings_doc.to_dict() if settings_doc.exists else {}
 
@@ -412,7 +445,6 @@ async def handle_withdrawal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_doc = db.collection('users').document(str(user_id)).get()
         user_data = user_doc.to_dict() or {}
         
-        # 🔥 FIX: balance ফিল্ড থেকে দেখাও
         current_balance = user_data.get('balance', 0.0)
 
         if current_balance < 50:
@@ -472,14 +504,15 @@ async def assign_task(platform: str, chat_id: int, user_id: int, context: Contex
 
         # Timeout task to reset assignment if user takes too long
         async def task_timeout():
-            await asyncio.sleep(30 * 60) # 30 mins
+            await asyncio.sleep(30 * 60)
             if user_id in user_states and user_states[user_id].get('task_doc_id') == task_doc.id:
                 try:
                     if db:
                         db.collection('tasks').document(task_doc.id).update({'status': 'pending'})
                 except Exception:
                     pass
-                del user_states[user_id]
+                if user_id in user_states:
+                    del user_states[user_id]
                 await context.bot.send_message(
                     chat_id,
                     "⏳ <b>আপনার টাস্ক বাতিল করা হয়েছে কারণ সময় শেষ হয়ে গেছে।</b>",
@@ -494,7 +527,6 @@ async def assign_task(platform: str, chat_id: int, user_id: int, context: Contex
             'timeout_task': asyncio.create_task(task_timeout())
         }
         
-        # 🔥 FIX: settings/rates ডকুমেন্ট থেকে পড়ো
         settings_doc = db.collection('settings').document('rates').get()
         settings = settings_doc.to_dict() if settings_doc.exists else {}
         state['price'] = settings.get(platform.lower(), {}).get('price', 0.0)
@@ -595,7 +627,6 @@ async def handle_instagram_2fa_key(update: Update, context: ContextTypes.DEFAULT
         user_states[user_id]['totp_secret'] = secret_key
         user_states[user_id]['last_totp'] = totp_code
         
-        # Message 1
         await context.bot.send_message(
             chat_id,
             "অ্যাকাউন্ট খোলা শেষ হলে নিচের বাটনে চাপ দিন:",
@@ -606,7 +637,6 @@ async def handle_instagram_2fa_key(update: Update, context: ContextTypes.DEFAULT
             ], resize_keyboard=True)
         )
 
-        # Message 2
         await context.bot.send_message(
             chat_id,
             f"নিচের কোডটিতে ক্লিক করলেই কপি হয়ে যাবে ⤵️\n\n<code>{totp_code}</code>",
@@ -702,12 +732,12 @@ async def handle_task_finish(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except Exception as e:
         logger.error(f"Error saving task: {e}")
 
-    # Clear timers and states
     if state.get('timeout_task'):
         try:
             state['timeout_task'].cancel()
         except: pass
-    del user_states[user_id]
+    if user_id in user_states:
+        del user_states[user_id]
 
     await context.bot.send_message(
         chat_id,
@@ -744,7 +774,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(chat_id, "<b>অনুগ্রহ করে সঠিক পরিমাণ লিখুন (সর্বনিম্ন ৫০ টাকা)।</b>", parse_mode='HTML')
                     return
                 
-                # 🔥 FIX: balance ফিল্ড থেকে চেক করো
                 user_doc = db.collection('users').document(str(user_id)).get()
                 user_data = user_doc.to_dict() or {}
                 balance = user_data.get('balance', 0.0)
