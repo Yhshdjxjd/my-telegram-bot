@@ -55,16 +55,17 @@ except Exception as e:
     logger.error(f'Failed to initialize Firebase: {e}')
 
 # ==========================================
-# Constants
+# Constants - FIXED
 # ==========================================
-MAIN_CHANNEL = -1003697051602  # আপনার মেইন চ্যানেল আইডি
-SUPPORT_CHANNEL = os.getenv('SUPPORT_CHANNEL_ID', '-1003951413076')
+MAIN_CHANNEL = "@income_box_x"  # ✅ ইউজারনেম দিয়ে চেক করো
+SUPPORT_CHANNEL = os.getenv('SUPPORT_CHANNEL_ID', '@support_channel')  # ✅ ইউজারনেম
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+
 # User states storage
 user_states: Dict[int, Dict[str, Any]] = {}
 
 # ==========================================
-# Background Tasks Checker
+# Background Tasks Checker - FIXED
 # ==========================================
 async def check_reviewed_tasks(application: Application):
     """Admin প্যানেল থেকে Approve/Reject করলে ইউজারকে নোটিফিকেশন দেওয়ার ব্যাকগ্রাউন্ড টাস্ক"""
@@ -97,12 +98,13 @@ async def check_reviewed_tasks(application: Application):
                         # ডাটাবেজে notified আপডেট করা
                         db.collection('completed_tasks').document(task.id).update({'notified': True})
 
-                        # ব্যালেন্স আপডেট (Approve হলে ব্যালেন্স অ্যাড হবে - Concurrency Safe)
+                        # 🔥 FIX: ব্যালেন্স আপডেট (balance + total_earned)
                         if status == 'approved' and user_id:
                             user_ref = db.collection('users').document(str(user_id))
                             try:
                                 user_ref.set({
                                     'total_earned': firestore.Increment(float(price)),
+                                    'balance': firestore.Increment(float(price)),  # ✅ যোগ করো
                                     'successful_tasks': firestore.Increment(1)
                                 }, merge=True)
                             except Exception as e:
@@ -119,6 +121,11 @@ async def check_reviewed_tasks(application: Application):
                         if user_id:
                             if status == 'approved':
                                 text = f"✅ <b>আপনার {amount} টাকার উত্তোলন অনুমোদিত হয়েছে!</b>\nটাকা আপনার অ্যাকাউন্টে পাঠানো হয়েছে।"
+                                # 🔥 FIX: Withdraw approved হলে balance কাটো
+                                user_ref = db.collection('users').document(str(user_id))
+                                user_ref.set({
+                                    'balance': firestore.Increment(-float(amount))
+                                }, merge=True)
                             else:
                                 reason = data.get('reject_reason', 'অ্যাকাউন্টে সমস্যা বা ভুল নাম্বার')
                                 text = f"❌ <b>আপনার {amount} টাকার উত্তোলন বাতিল করা হয়েছে!</b>\n⚠️ কারণ: {reason}\nটাকা আপনার ব্যালেন্সে রিফান্ড করা হয়েছে।"
@@ -182,13 +189,14 @@ def get_main_keyboard():
 
 async def check_membership(bot, user_id: int) -> bool:
     try:
+        # ✅ ইউজারনেম দিয়ে চেক করো
         main_member = await bot.get_chat_member(MAIN_CHANNEL, user_id)
-        main_valid = main_member.status in ['member', 'administrator', 'creator', 'restricted']
+        main_valid = main_member.status in ['member', 'administrator', 'creator']
 
         support_valid = False
         try:
             support_member = await bot.get_chat_member(SUPPORT_CHANNEL, user_id)
-            support_valid = support_member.status in ['member', 'administrator', 'creator', 'restricted']
+            support_valid = support_member.status in ['member', 'administrator', 'creator']
         except Exception as e:
             logger.error(f"Support channel check error: {e}")
 
@@ -237,6 +245,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             referred_by = None
             if context.args and context.args[0] != str(user_id):
                 referred_by = context.args[0]
+            # ✅ FIX: balance ফিল্ড যোগ করো
             user_ref.set({
                 'first_name': user.first_name or '',
                 'last_name': user.last_name or '',
@@ -244,6 +253,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'referred_by': referred_by,
                 'referral_bonus_paid': False,
                 'total_earned': 0.0,
+                'balance': 0.0,  # ✅ যোগ করো
                 'successful_tasks': 0,
                 'joined_at': firestore.SERVER_TIMESTAMP
             })
@@ -327,7 +337,8 @@ async def handle_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if data.get('status') == 'pending':
                 pending_withdrawal += data.get('amount', 0.0)
 
-        current_balance = total_earned - total_withdrawn - pending_withdrawal
+        # 🔥 FIX: balance ফিল্ড থেকে সরাসরি দেখাও
+        current_balance = user_data.get('balance', 0.0)
 
         balance_text = f"""💵 <b>আপনার ব্যালেন্স ড্যাশবোর্ড</b>
 ────────────────────
@@ -356,11 +367,10 @@ async def handle_tasks_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id, "⚠️ <b>দয়া করে প্রথমে চ্যানেলে জয়েন করুন!</b>", parse_mode='HTML')
         return
 
-    # Fetch settings from Firebase dynamically
-    settings_doc = db.collection('settings').document('app_settings').get()
+    # 🔥 FIX: settings/rates ডকুমেন্ট থেকে পড়ো
+    settings_doc = db.collection('settings').document('rates').get()
     settings = settings_doc.to_dict() if settings_doc.exists else {}
 
-    # Default value set to False so no demo tasks appear before admin turns them on
     ig_set = settings.get('instagram', {'enabled': False, 'price': 0.0})
     fb_set = settings.get('facebook', {'enabled': False, 'price': 0.0})
     gm_set = settings.get('gmail', {'enabled': False, 'price': 0.0})
@@ -401,19 +411,9 @@ async def handle_withdrawal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_doc = db.collection('users').document(str(user_id)).get()
         user_data = user_doc.to_dict() or {}
-        total_earned = user_data.get('total_earned', 0.0)
-
-        withdrawals_snapshot = db.collection('withdrawals').where('user_id', '==', user_id).get()
-        total_withdrawn = 0.0
-        pending_withdrawal = 0.0
-        for doc in withdrawals_snapshot:
-            data = doc.to_dict()
-            if data.get('status') == 'approved':
-                total_withdrawn += data.get('amount', 0.0)
-            if data.get('status') == 'pending':
-                pending_withdrawal += data.get('amount', 0.0)
-
-        current_balance = total_earned - total_withdrawn - pending_withdrawal
+        
+        # 🔥 FIX: balance ফিল্ড থেকে দেখাও
+        current_balance = user_data.get('balance', 0.0)
 
         if current_balance < 50:
             await context.bot.send_message(
@@ -494,8 +494,8 @@ async def assign_task(platform: str, chat_id: int, user_id: int, context: Contex
             'timeout_task': asyncio.create_task(task_timeout())
         }
         
-        # Read price from settings to attach to the task session
-        settings_doc = db.collection('settings').document('app_settings').get()
+        # 🔥 FIX: settings/rates ডকুমেন্ট থেকে পড়ো
+        settings_doc = db.collection('settings').document('rates').get()
         settings = settings_doc.to_dict() if settings_doc.exists else {}
         state['price'] = settings.get(platform.lower(), {}).get('price', 0.0)
 
@@ -744,20 +744,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(chat_id, "<b>অনুগ্রহ করে সঠিক পরিমাণ লিখুন (সর্বনিম্ন ৫০ টাকা)।</b>", parse_mode='HTML')
                     return
                 
-                # Check DB for balance
+                # 🔥 FIX: balance ফিল্ড থেকে চেক করো
                 user_doc = db.collection('users').document(str(user_id)).get()
                 user_data = user_doc.to_dict() or {}
-                total_earned = user_data.get('total_earned', 0.0)
+                balance = user_data.get('balance', 0.0)
                 
-                withdrawals_snapshot = db.collection('withdrawals').where('user_id', '==', user_id).get()
-                total_withdrawn = 0.0
-                pending_withdrawal = 0.0
-                for doc in withdrawals_snapshot:
-                    data = doc.to_dict()
-                    if data.get('status') == 'approved': total_withdrawn += data.get('amount', 0.0)
-                    if data.get('status') == 'pending': pending_withdrawal += data.get('amount', 0.0)
-                
-                balance = total_earned - total_withdrawn - pending_withdrawal
                 if amount > balance:
                     await context.bot.send_message(chat_id, "<b>আপনার একাউন্টে পর্যাপ্ত ব্যালেন্স নেই।</b>", parse_mode='HTML')
                     return
